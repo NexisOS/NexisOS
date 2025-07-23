@@ -45,7 +45,9 @@ NexisOS/
 │       ├── install.sh
 │       └── post-install.sh
 │
-├── Makefile                           # Entry point to build NexisOS minimal installer Iso
+├── buildroot/                        # Buildroot submodule (Linux build system)
+├── buildroot_backup_imgs/            # Backups of Buildroot output images
+├── Makefile                          # Entry point to build NexisOS minimal installer ISO
 ├── README.md
 ├── LICENSE
 ├── VERSION
@@ -88,22 +90,32 @@ Prj
 </details>
 
 
-## 🛠️ Build the NexisOS ISO
-Project should be put in same directory level as buildroot
+## 🛠️ Build the NexisOS ISO Targets
 
 <details>
 <summary>Click to see how to build iso</summary>
 
 To build the ISO using one of the provided Buildroot defconfig files:
 ```sh
-make              # Builds x86_64 by default
-make ARCH=aarch64 # Builds using nexisos_aarch64_defconfig
-make ARCH=riscv64 # Builds using nexisos_riscv64_defconfig
+git submodule update --init --recursive # initialize buildroot submodule
+make                                    # Builds x86_64 by default
+make ARCH=aarch64                       # Builds using nexisos_aarch64_defconfig
+make ARCH=riscv64                       # Builds using nexisos_riscv64_defconfig
 ```
 
 After the build completes, the ISO and related images will be located in:
 ```sh
-buildroot/output/images
+buildroot_backup_imgs/x86/output/images/bzImage
+buildroot_backup_imgs/x86/output/images/rootfs.ext2
+buildroot_backup_imgs/x86/output/images/run-qemu.sh
+
+buildroot_backup_imgs/aarch64/output/images/bzImage
+buildroot_backup_imgs/aarch64/output/images/rootfs.ext2
+buildroot_backup_imgs/aarch64/output/images/run-qemu.sh
+
+buildroot_backup_imgs/riscv64/output/images/bzImage
+buildroot_backup_imgs/riscv64/output/images/rootfs.ext2
+buildroot_backup_imgs/riscv64/output/images/run-qemu.sh
 ```
 
 </details>
@@ -114,14 +126,9 @@ buildroot/output/images
 <summary>Click to see how to test distro in virt</summary>
 
 ```sh
-qemu-system-x86_64 \
-  -m 2048 \
-  -bios /usr/share/OVMF/OVMF_CODE.fd \
-  -cdrom buildroot/output/images/nexisos.iso \
-  -boot d \
-  -enable-kvm \
-  -net nic -net user \
-  -serial stdio
+make run-qemu              # defaults to ARCH=x86_64
+make run-qemu ARCH=x86     # specify arch explicitly
+make run-qemu ARCH=aarch64
 ```
 
 </details>
