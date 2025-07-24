@@ -28,6 +28,22 @@ pkgs.buildFHSEnv {
     tar
     zlib
     glibc
+    diffutils
+    gettext
+    xz
+    gzip
+    bzip2
+    lzop
+    lz4
+    zstd
+    pkg-config
+    autoconf
+    automake
+    libtool
+    texinfo
+    openssl.dev
+    curl
+    subversion
   ];
 
   runScript = "bash";
