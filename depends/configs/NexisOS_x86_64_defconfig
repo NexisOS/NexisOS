@@ -20,6 +20,7 @@ BR2_PACKAGE_UTIL_LINUX=y
 BR2_PACKAGE_UTIL_LINUX_PARTED=y
 BR2_PACKAGE_E2FSPROGS_MKFS=y
 BR2_PACKAGE_XFSPROGS=y
+BR2_PACKAGE_BTRFS_PROGS=y     # Add Btrfs utilities for installer support
 
 # Networking + secure download (minimal TLS)
 BR2_PACKAGE_IFUPDOWN_SCRIPTS=y

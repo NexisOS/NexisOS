@@ -13,6 +13,34 @@ OUTPUT_DIR := output-$(ARCH)
 BACKUP_CONFIG := $(BUILDROOT_DIR)/package/Config.in.bak
 BUILDROOT_CONFIG := $(BUILDROOT_DIR)/package/Config.in
 
+# === QEMU flags per architecture ===
+
+QEMU_x86_64 = qemu-system-x86_64 -m 2048 -cpu host -enable-kvm \
+	-drive if=pflash,format=raw,readonly,file=firmware/OVMF_CODE.fd \
+	-drive if=pflash,format=raw,file=firmware/OVMF_VARS.fd \
+	-drive file=$(OUTPUT_DIR)/images/nexisos.iso,media=cdrom,readonly=on \
+	-netdev user,id=net0 -device e1000,netdev=net0 \
+	-device virtio-serial-pci \
+	-serial stdio \
+	-boot d
+
+QEMU_aarch64 = qemu-system-aarch64 -m 2048 -cpu cortex-a57 -machine virt,secure=off \
+	-bios firmware/QEMU_EFI.fd \
+	-drive if=none,file=$(OUTPUT_DIR)/images/nexisos.iso,format=raw,id=cdrom \
+	-device virtio-blk-device,drive=cdrom \
+	-netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+	-serial stdio \
+	-boot d
+
+QEMU_riscv64 = qemu-system-riscv64 -m 2048 -machine virt -bios default \
+	-kernel $(OUTPUT_DIR)/images/Image \
+	-append "root=/dev/vda rw console=ttyS0" \
+	-drive file=$(OUTPUT_DIR)/images/rootfs.ext4,format=raw,id=hd0 \
+	-device virtio-blk-device,drive=hd0 \
+	-netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+	-serial mon:stdio \
+	-nographic
+
 # === Targets ===
 
 .PHONY: validate-kernel-config
@@ -63,9 +91,29 @@ patch-config:
 		echo "nexpm Config.in patch already applied to Buildroot package/Config.in"; \
 	fi
 
+.PHONY: copy-runtime-files
+copy-runtime-files:
+	@mkdir -p $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/root/package_manager
+	@mkdir -p $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/root/scripts
+	@cp -r depends/package_manager/* $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/root/package_manager/
+	@cp depends/scripts/*.sh $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/root/scripts/
+	@chmod +x $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/root/scripts/*.sh
+	@echo "📦 Copied package manager and scripts to rootfs overlay"
+
+.PHONY: setup-postbuild
+setup-postbuild:
+	@mkdir -p $(BUILDROOT_DIR)/board/nexisos
+	@cat > $(BUILDROOT_DIR)/board/nexisos/post-build.sh << 'EOF'
+#!/bin/sh
+# Run install.sh at login
+echo "/root/scripts/install.sh" >> $(TARGET_DIR)/etc/profile
+EOF
+	@chmod +x $(BUILDROOT_DIR)/board/nexisos/post-build.sh
+	@echo "🛠️  Created post-build hook to auto-launch installer on boot"
+
 .PHONY: copy-dependencies
-copy-dependencies: copy-kernel-config copy-nexpm-package patch-config
-	@echo "✅ All required dependencies have been moved to Buildroot."
+copy-dependencies: copy-kernel-config copy-nexpm-package patch-config copy-runtime-files setup-postbuild
+	@echo "✅ All required dependencies and scripts prepared for Buildroot."
 
 .PHONY: restore-config
 restore-config:
@@ -103,12 +151,17 @@ distclean: clean
 
 .PHONY: run-qemu
 run-qemu:
-	@if [ -x buildroot_backup_imgs/$(ARCH)/output/images/run-qemu.sh ]; then \
-		echo "Running QEMU for ARCH=$(ARCH)..."; \
-		ARCH=$(ARCH) ./buildroot_backup_imgs/$(ARCH)/output/images/run-qemu.sh; \
+	@if [ "$(ARCH)" = "x86_64" ]; then \
+		echo "Running QEMU for x86_64..."; \
+		$(QEMU_x86_64); \
+	elif [ "$(ARCH)" = "aarch64" ]; then \
+		echo "Running QEMU for aarch64..."; \
+		$(QEMU_aarch64); \
+	elif [ "$(ARCH)" = "riscv64" ]; then \
+		echo "Running QEMU for riscv64..."; \
+		$(QEMU_riscv64); \
 	else \
-		echo "Error: run-qemu.sh not found or not executable at buildroot_backup_imgs/$(ARCH)/output/images/run-qemu.sh"; \
-		exit 1; \
+		echo "Unsupported ARCH=$(ARCH) for run-qemu"; exit 1; \
 	fi
 
 .PHONY: help
@@ -118,7 +171,7 @@ help:
 	@echo "  make [ARCH=arch]     Build image for specified arch (default: x86_64)"
 	@echo "  make clean           Clean build output for selected arch"
 	@echo "  make distclean       Remove output directory for selected arch and backup config"
-	@echo "  make run-qemu        Run NexisOS in QEMU using buildroot_backup_imgs/ARCH/output/images/run-qemu.sh"
+	@echo "  make run-qemu        Run NexisOS in QEMU with proper flags for the selected arch"
 	@echo ""
 	@echo "Available architectures:"
 	@ls depends/configs/NexisOS_*_defconfig | sed 's/.*NexisOS_\(.*\)_defconfig/\1/' | xargs -n1 echo " -"

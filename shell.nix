@@ -1,6 +1,6 @@
 { pkgs ? import <nixpkgs> {} }:
 
-pkgs.buildFHSEnv {
+(pkgs.buildFHSEnv {
   name = "buildroot-env";
   multiPkgs = pkgs: with pkgs; [
     bash
@@ -25,7 +25,7 @@ pkgs.buildFHSEnv {
     findutils
     util-linux
     gawk
-    tar
+    gnutar
     zlib
     glibc
     diffutils
@@ -48,4 +48,4 @@ pkgs.buildFHSEnv {
 
   runScript = "bash";
 
-}.env
+}).env
