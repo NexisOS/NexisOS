@@ -23,11 +23,12 @@ jobs:
           This is a pre-alpha development snapshot of NexisOS.
 
           ### 🚧 Status
-          - Initial tag for bootstrapping the OS
-          - GitHub Actions release flow implemented
-          - ISO not yet available (build system in progress)
+          - Build system is now capable of generating NexisOS images (e.g., ISO)
+          - Image creation implemented but not yet tested
+          - Images are **not uploaded** here — manual upload (e.g. to SourceForge) is required
+          - QEMU boot configuration is available for local testing
 
-          ⚠️ Not a usable OS release yet — for devs and testers only.
+          ⚠️ Not a usable OS release yet — intended for developers and early testers only.
           EOT
           EOF
 
