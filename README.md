@@ -21,15 +21,17 @@ You can try the latest ISO build of NexisOS by downloading it from SourceForge:
 ```text
 NexisOS/
 ├── depends/                           # All custom code, tools, and scripts
-│   ├── configs/                       # Defconfig used to build NexisOS minimal installer Iso
+│   ├── configs/                       # Defconfig files to build NexisOS minimal installer ISO
 │   │   ├── NexisOS_x86_64_defconfig
 │   │   ├── NexisOS_aarch64_defconfig
 │   │   └── NexisOS_riscv64_defconfig
-│   ├── kernel-configs/                # Linux kernel config files per arch
+│   │
+│   ├── kernel-configs/                # Linux kernel config files per architecture
 │   │   ├── linux-x86_64.config
 │   │   ├── linux-aarch64.config
 │   │   └── linux-riscv64.config
-│   ├── package_manager/               # NexisOS package manager (written in Rust)
+│   │
+│   ├── package_manager/               # Rust source for NexisOS package manager
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── cli.rs
@@ -37,17 +39,40 @@ NexisOS/
 │   │       ├── main.rs
 │   │       ├── manifest.rs
 │   │       ├── packages.rs
-│   │       ├── rollback.rs  
+│   │       ├── rollback.rs
 │   │       ├── store.rs
 │   │       ├── types.rs
 │   │       └── util.rs
-│   └── scripts/                       # Installer and post-install scripts
+│   │
+│   ├── package/                       # Buildroot package definition for nexpm
+│   │   ├── Config.in
+│   │   └── nexpm/
+│   │       ├── Config.in
+│   │       └── nexpm.mk               # Build instructions to compile Rust package manager
+│   │
+│   ├── overlay/                       # Root filesystem overlay for Buildroot
+│   │   ├── etc/
+│   │   │   ├── motd                   # Message of the day
+│   │   │   └── skel/
+│   │   │       └── .config/
+│   │   │           └── autostart/
+│   │   │               └── nexis-welcome.desktop
+│   │   │
+│   │   └── root/
+│   │       ├── scripts/               # Runtime scripts, installer, post-install hooks
+│   │       │   ├── install.sh
+│   │       │   └── post-install.sh
+│   │       └── package_manager/       # Runtime config, data for package manager (no source)
+│   │           └── config.toml
+│   │
+│   └── scripts/                       # Helper/build scripts for project (optional)
+│       ├── build_package_manager.sh   # Optional: compile package manager manually
 │       ├── install.sh
 │       └── post-install.sh
 │
-├── buildroot/                        # Buildroot submodule (Linux build system)
-├── buildroot_backup_imgs/            # Backups of Buildroot output images
-├── Makefile                          # Entry point to build NexisOS minimal installer ISO
+├── buildroot/                         # Buildroot submodule (Linux build system)
+├── buildroot_backup_imgs/             # Backups of Buildroot output images
+├── Makefile                           # Main build orchestrator for NexisOS ISO
 ├── README.md
 ├── LICENSE
 ├── VERSION

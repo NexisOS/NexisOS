@@ -1,80 +1,96 @@
-#!/bin/bash
+#!/bin/sh
 
-# Helper function for error handling
-function error_exit {
-    echo "Error: $1"
+set -e
+
+# === Helper function for error handling ===
+error_exit() {
+    echo "Error: $1" >&2
     exit 1
 }
 
-# Step 1: Set up directories and permissions
-echo "Setting up necessary directories..."
+log_info() {
+    echo "[INFO] $1"
+}
 
-# Ensure /etc/NexisOS exists (this will store your TOML configuration files)
-if [ ! -d "/etc/NexisOS" ]; then
-    mkdir -p /etc/NexisOS || error_exit "Failed to create /etc/NexisOS"
+log_warn() {
+    echo "[WARN] $1"
+}
+
+log_info "Starting NexisOS post-install script..."
+
+# === 1. Set hostname ===
+log_info "Setting hostname..."
+echo "mydistro" > /etc/hostname
+
+# === 2. Create default user ===
+log_info "Creating default user..."
+adduser -D myuser || error_exit "Failed to create user 'myuser'"
+echo "myuser:changeme" | chpasswd || error_exit "Failed to set password for 'myuser'"
+
+# === 3. Create system user for services ===
+log_info "Creating service user 'nexisuser'..."
+if ! id "nexisuser" >/dev/null 2>&1; then
+    useradd -r -m -s /bin/bash nexisuser || error_exit "Failed to create 'nexisuser'"
 fi
 
-# Set appropriate permissions for the directory
+# === 4. Set up configuration directory ===
+log_info "Setting up /etc/NexisOS..."
+mkdir -p /etc/NexisOS || error_exit "Failed to create config directory"
 chmod 755 /etc/NexisOS
 
-# Step 2: Copy the default configuration file (TOML format)
-echo "Setting up default configuration files..."
-
-# Assuming we have a template configuration file stored in /usr/share/nexis/config.toml
+# === 5. Copy default TOML config ===
+log_info "Copying default config.toml..."
 if [ -f "/usr/share/nexis/config.toml" ]; then
     cp /usr/share/nexis/config.toml /etc/NexisOS/config.toml || error_exit "Failed to copy configuration file"
+    chmod 644 /etc/NexisOS/config.toml
 else
-    echo "Warning: Default config.toml not found, skipping."
+    log_warn "Default config.toml not found. Skipping copy."
 fi
 
-# Set permissions for the configuration file
-chmod 644 /etc/NexisOS/config.toml
+# === 6. Install essential system packages ===
+log_info "Installing core system packages with nexis-pkg..."
+nexis-pkg install core-tools || error_exit "Failed to install 'core-tools'"
 
-# Step 3: Install essential system packages (using your custom Rust-based package manager)
-echo "Installing essential system packages..."
+# === 7. Handle dependency resolution ===
+log_info "Resolving package dependencies..."
+nexis-pkg resolve-deps || error_exit "Dependency resolution failed"
 
-# Example: Install a package called "core-tools" using your package manager (adjust the command for your package manager)
-nexis-pkg install core-tools || error_exit "Failed to install core-tools"
+# === 8. Install bootloader ===
+log_info "Installing bootloader..."
+grub-install /dev/sda || error_exit "Bootloader installation failed"
+update-grub || error_exit "Failed to update grub config"
 
-# Step 4: Set up users and groups (if necessary)
-echo "Setting up system users and groups..."
+# === 9. Enable security-related services ===
+log_info "Enabling security services..."
+for svc in firewalld suricata clamav-daemon maldetect; do
+    systemctl enable "$svc" || log_warn "Failed to enable $svc"
+done
 
-# Example: Creating a system user for running services
-if ! id "nexisuser" &>/dev/null; then
-    useradd -r -m -s /bin/bash nexisuser || error_exit "Failed to create user nexisuser"
-    echo "User nexisuser created successfully"
-fi
+# === 10. Configure firewall ===
+log_info "Configuring firewalld..."
+firewall-cmd --set-default-zone=public
+firewall-cmd --permanent --add-service=ssh
+firewall-cmd --reload || log_warn "Failed to reload firewalld"
 
-# Step 5: Set up system services
-echo "Setting up system services..."
-
-# Assuming your package manager has a way to register services with systemd or another init system
-# Example: Enable and start a service called "nexis-service"
+# === 11. Enable and start custom services ===
+log_info "Setting up NexisOS system services..."
 systemctl enable nexis-service || error_exit "Failed to enable nexis-service"
-systemctl start nexis-service || error_exit "Failed to start nexis-service"
+systemctl start nexis-service || log_warn "Failed to start nexis-service"
 
-# Step 6: Handle dependency resolution (preventing dependency hell)
-echo "Handling dependencies..."
+# === 12. Finalize installation (e.g., DB setup, indexing, etc.) ===
+log_info "Finalizing installation..."
+nexis-setup --finalize || log_warn "Final setup failed"
 
-# Assuming you have a custom tool to resolve and install dependencies in a non-conflicting manner
-nexis-pkg resolve-deps || error_exit "Failed to resolve dependencies"
+# === 13. Cleanup temporary files ===
+log_info "Cleaning temporary files..."
+rm -rf /tmp/nexis-install || log_warn "Failed to remove /tmp/nexis-install"
 
-# Step 7: Clean up temporary files
-echo "Cleaning up temporary installation files..."
+# === 14. Log success and remove script ===
+log_info "Post-install completed successfully!"
+echo "Installation completed successfully on $(date)" >> /var/log/nexis-install.log
 
-# Remove installation leftovers, logs, or temporary files created during installation
-rm -rf /tmp/nexis-install || error_exit "Failed to clean temporary files"
+log_info "Cleaning up post-install script..."
+rm -f /post_install.sh
 
-# Step 8: Finalizing installation (optional tasks like database setup)
-echo "Finalizing installation tasks..."
-
-# Example: Running a database migration script or any final setup steps
-nexis-setup --finalize || error_exit "Failed to complete final setup"
-
-# Step 9: Log installation success
-echo "Installation completed successfully" >> /var/log/nexis-install.log
-
-# Step 10: Notify user (optional)
-echo "Installation of NexisOS is complete! Please reboot your system."
-
-# End of script
+# === 15. Notify user ===
+echo "✅ NexisOS installation is complete. You may now reboot your system."

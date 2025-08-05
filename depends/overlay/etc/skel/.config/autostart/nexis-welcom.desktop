@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Exec=/usr/bin/nexis-welcome
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=NexisOS First Boot
+Comment=Welcome and initial setup

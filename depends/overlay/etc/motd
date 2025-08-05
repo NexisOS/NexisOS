@@ -1,0 +1,22 @@
+███████╗███╗   ██╗███████╗██╗███████╗ ██████╗ ███████╗
+██╔════╝████╗  ██║██╔════╝██║██╔════╝██╔═══██╗██╔════╝
+█████╗  ██╔██╗ ██║█████╗  ██║███████╗██║   ██║█████╗  
+██╔══╝  ██║╚██╗██║██╔══╝  ██║╚════██║██║   ██║██╔══╝  
+███████╗██║ ╚████║██║     ██║███████║╚██████╔╝███████╗
+╚══════╝╚═╝  ╚═══╝╚═╝     ╚═╝╚══════╝ ╚═════╝ ╚══════╝
+
+Welcome to NexisOS — Minimal. Hardened. Custom.
+
+ Version   : 1.0.0
+ Hostname  : \n
+ Date      : \d
+
+──────────────────────────────────────────────
+ ⚠ Unauthorized access is prohibited.
+ ⚠ All activity may be monitored and logged.
+──────────────────────────────────────────────
+
+Helpful commands:
+ - `nexis-pkg help`   Custom package manager
+ - `man nexisos`      NexisOS manual
+ - `nexis-setup`      Finalize configuration
