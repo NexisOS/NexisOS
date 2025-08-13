@@ -1,1 +1,2 @@
-# .gitignore file - currently no ignored files
+buildroot_backup_imgs/*
+!buildroot_backup_imgs/.keep

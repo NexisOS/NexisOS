@@ -167,13 +167,37 @@ make run-qemu ARCH=aarch64
 [system]
 hostname = "myhost"
 timezone = "UTC"
-version = "0.1.0"               # System release version
-kernel = "linux-6.9.2"          # Kernel version or build target (from package repo or tarball)
+version = "0.1.0"
+kernel = "linux-6.9.2"
 kernel_source = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.2.tar.xz"
-kernel_config = "configs/kernel-default.config"  # Optional path to a custom .config
+kernel_config = "configs/kernel-default.config"
+
+[system.selinux]
+enabled = true
+mode = "enforcing"    # can be "permissive" or "disabled" for testing
+
+[system.firewall]
+# Choose one firewall backend: "nftables", "iptables", or "firewalld"
+# You can switch between them as needed.
+backend = "nftables"
 
 [users.root]
-password_hash = "..."  # SHA512 crypt
+password_hash = "$argon2id$v=19$m=65536,t=3,p=4$SOME_BASE64_SALT$SOME_BASE64_HASH"
+authorized_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICWJv... user@example.com",
+  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... user2@example.com"
+]
+
+[system.locale]
+lang = "en_US.UTF-8"
+keyboard_layout = "us"
+
+[network]
+interface = "eth0"
+dhcp = true
+# static_ip = "192.168.1.100/24"
+# gateway = "192.168.1.1"
+# dns = ["8.8.8.8", "8.8.4.4"]
 
 [includes]
 paths = [
@@ -184,9 +208,18 @@ paths = [
 
 [[packages]]
 name = "vim"
-version = "9.0"
-prebuilt = "https://cdn.mydistro.org/vim-9.0-x86_64.tar.gz"
+version = "latest"
+prebuilt = "https://github.com/vim/vim/releases/download/{tag}/vim-{tag}-linux-{arch}.tar.gz"
+fallback_to_source = true
+source = "https://github.com/vim/vim.git"
+patches = ["patches/fix-utf8-bug.patch"]
+pre_build_script = "./scripts/setup-env.sh"
+post_build_script = "./scripts/custom-cleanup.sh"
+build_system = "make"
+build_flags = ["-j4"]
 context_file = "contexts/vim.cil"
+env = { "TERM" = "xterm-256color", "VIMRUNTIME" = "/usr/share/vim/vimfiles" }
+runtime_dirs = ["/var/log/vim", "$XDG_RUNTIME_DIR/vim"]
 
 [[packages]]
 name = "libpng"
@@ -196,7 +229,6 @@ hash = "sha256:abc123..."
 build_system = "configure"
 build_flags = ["--enable-static"]
 dependencies = ["zlib"]
-# build_profile removed; inferred automatically
 
 [config_files.suricata]
 path = "/etc/suricata/suricata.yaml"
@@ -237,6 +269,48 @@ depends = ["network"]
 working_directory = "/"
 log_file = "/var/log/sshd.log"
 restart = "true"
+
+[[log_rotation]]
+path = "/var/log/sshd.log"
+max_size_mb = 100
+max_files = 7
+compress = true
+rotate_interval_days = 1
+
+[[log_rotation]]
+path = "/var/log/vim"
+max_size_mb = 50
+max_files = 5
+compress = true
+```
+
+</details>
+
+## ⚙️ Example SELinux Module Structure
+
+> **Note:**  
+> This SELinux policy module is managed by the system and **must not be edited manually**.  
+> Please make changes only via the package manager or official policy tools to maintain system integrity and security.
+
+<details>
+<summary>Click to see possible SELinux policy example</summary>
+
+```text
+policy_module(immutable_paths, 1.0)
+
+# Define read-only types for critical dirs
+type immutable_dir_t;
+files_read_only(immutable_dir_t)
+
+# Assign context to paths
+files_type(immutable_dir_t, "/etc(/.*)?")
+files_type(immutable_dir_t, "/usr(/.*)?")
+files_type(immutable_dir_t, "/boot(/.*)?")
+
+# Disallow writes to immutable_dir_t by normal users and processes
+allow user_t immutable_dir_t:dir { getattr search open };
+allow user_t immutable_dir_t:file { getattr open read };
+# Deny write, create, unlink permissions explicitly
 ```
 
 </details>
