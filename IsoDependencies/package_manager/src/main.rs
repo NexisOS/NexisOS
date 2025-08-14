@@ -1,34 +1,38 @@
 mod cli;
+mod config;
 mod manifest;
 mod packages;
-mod store;
 mod rollback;
-mod config;
-mod util;
+mod store;
 mod types;
 
-use crate::cli::{Cli, Commands};
 use anyhow::Result;
+use cli::{Cli, Commands};
+use clap::Parser;
+use env_logger::Env;
+use log::{debug, info};
 
 fn main() -> Result<()> {
+    // Parse CLI arguments
     let cli = Cli::parse();
 
+    // Initialize logger — default INFO, switch to DEBUG if --verbose passed
+    let log_level = if cli.verbose { "debug" } else { "info" };
+    env_logger::Builder::from_env(Env::default().default_filter_or(log_level)).init();
+
+    debug!("Verbose logging enabled");
+    info!("Starting nexpm");
+
     match cli.command {
-        Commands::Build => {
-            println!("Building packages...");
-            // TODO: call build function here
-        }
-        Commands::Install => {
-            println!("Installing profile...");
-            // TODO: call install function here
-        }
-        Commands::Rollback => {
-            println!("Rolling back...");
-            // TODO: call rollback function here
-        }
-        Commands::Status => {
-            println!("Showing status...");
-            // TODO: call status function here
+        Commands::Apply { config } => packages::apply(config.as_deref())?,
+        Commands::Install { name } => packages::install_single(&name)?,
+        Commands::Status => packages::status()?,
+        Commands::Rollback { steps } => rollback::rollback(steps)?,
+        Commands::ListGenerations => rollback::list_generations()?,
+        Commands::DeleteGenerations { ids } => {
+            for id in ids {
+                rollback::delete_generation(id)?;
+            }
         }
     }
 
