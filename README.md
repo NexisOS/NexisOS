@@ -1,5 +1,6 @@
 # NexisOS
 Main repository for the NexisOS Linux distribution, containing core build infrastructure, package manager source, configuration examples, and tooling.
+Optimized for fast package store operations, generation rollbacks, and high-performance GC.
 
 ---
 
@@ -31,24 +32,33 @@ NexisOS/
 │   │   ├── linux-aarch64.config
 │   │   └── linux-riscv64.config
 │   │
-│   ├── package_manager/               # Rust source for NexisOS package manager
+│   ├── nexis-pkg/                     # Rust source for NexisOS package manager
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── cli.rs
-│   │       ├── config.rs
-│   │       ├── main.rs
-│   │       ├── manifest.rs
-│   │       ├── packages.rs
-│   │       ├── rollback.rs
-│   │       ├── store.rs
-│   │       ├── types.rs
-│   │       └── util.rs
+│   │       ├── main.rs                # CLI + command dispatch
+│   │       ├── config.rs              # parse /etc/nexis/config.toml
+│   │       ├── store/
+│   │       │   ├── mod.rs             # public store API
+│   │       │   ├── ingest.rs          # ingest-time dedup logic
+│   │       │   ├── backend.rs         # FS abstractions (reflink/hardlink)
+│   │       │   └── layout.rs          # path hashing and layout helpers
+│   │       ├── meta/
+│   │       │   ├── mod.rs             # MetaStore trait + backend selection
+│   │       │   ├── sled_store.rs      # sled implementation for ext4
+│   │       │   └── rocksdb_store.rs   # RocksDB implementation for XFS
+│   │       ├── gc/
+│   │       │   ├── mod.rs             # GC controller (mark + staged delete)
+│   │       │   └── worker.rs          # background deletion workers
+│   │       ├── gen/
+│   │       │   ├── mod.rs             # generation creation + activation
+│   │       │   └── grub.rs            # grub menu entry generation
+│   │       └── util.rs                # small utilities (hashing, errors, io)
 │   │
-│   ├── package/                       # Buildroot package definition for nexpm
+│   ├── package/                       # Buildroot package definition for nexis-pkg
 │   │   ├── Config.in
-│   │   └── nexpm/
+│   │   └── nexis-pkg/
 │   │       ├── Config.in
-│   │       └── nexpm.mk               # Build instructions to compile Rust package manager
+│   │       └── nexis-pkg.mk           # Build instructions to compile Rust package manager
 │   │
 │   ├── overlay/                       # Root filesystem overlay for Buildroot
 │   │   ├── etc/
@@ -62,15 +72,15 @@ NexisOS/
 │   │       ├── scripts/               # Runtime scripts, installer, post-install hooks
 │   │       │   ├── install.sh
 │   │       │   └── post-install.sh
-│   │       └── package_manager/       # Runtime config, data for package manager (no source)
+│   │       └── nexis-pkg/             # Runtime config, data for package manager (no source)
 │   │           └── config.toml
 │   │
 │   └── scripts/                       # Helper/build scripts for project (optional)
-│       ├── build_package_manager.sh   # Optional: compile package manager manually
+│       ├── build_nexis_pkg.sh         # Optional: compile package manager manually
 │       ├── install.sh
 │       └── post-install.sh
 │
-├── buildroot/                         # Buildroot submodule (Linux build system)
+├── buildroot/                         # Buildroot submodule (Builds installer ISO)
 ├── buildroot_backup_imgs/             # Backups of Buildroot output images
 ├── Makefile                           # Main build orchestrator for NexisOS ISO
 ├── README.md
@@ -83,33 +93,31 @@ NexisOS/
 
 </details>
 
-## 🔧 Prerequisites
+## 🔧 Building From Source Prerequisites
 
 <details>
-<summary>Click to see if you have the following Prj dependencies</summary>
+<summary>Click to see dependencies</summary>
 
 ```text
-Buildroot
-├── build-essential
-├── make
-├── git
-├── python3
-├── wget
-├── unzip
-├── rsync
-├── cpio
-├── libncurses-dev
-├── libssl-dev
-├── bc
-├── flex
-├── bison
-└── curl
+Buildroot:
+- build-essential
+- make
+- git
+- python3
+- wget
+- unzip
+- rsync
+- cpio
+- libncurses-dev
+- libssl-dev
+- bc
+- flex
+- bison
+- curl
 
-Prj
-├── package_manager
-│   └── rustup
-└── qemu
-    └── ovmf # UEFI support
+Project:
+- Rust (via rustup) for package_manager
+- QEMU + OVMF (UEFI support)
 ```
 
 </details>
@@ -128,7 +136,7 @@ make ARCH=aarch64                       # Builds using nexisos_aarch64_defconfig
 make ARCH=riscv64                       # Builds using nexisos_riscv64_defconfig
 ```
 
-After the build completes, the ISO and related images will be located in:
+Output locations:
 ```sh
 buildroot_backup_imgs/x86/output/images/bzImage
 buildroot_backup_imgs/x86/output/images/rootfs.ext2
@@ -311,6 +319,105 @@ files_type(immutable_dir_t, "/boot(/.*)?")
 allow user_t immutable_dir_t:dir { getattr search open };
 allow user_t immutable_dir_t:file { getattr open read };
 # Deny write, create, unlink permissions explicitly
+```
+
+</details>
+
+
+## ⚙️ Package Store Design
+
+<details>
+<summary>Click to see Goals</summary>
+
+```text
+Core Goals:
+
+- Desktop/Gaming (ext4 + sled)
+  - Root/Home: ext4
+  - Store: ext4 with ingest-time dedup (hard-links)
+  - GC: refcount + staged deletes
+  - Metadata DB: sled
+
+- Server (XFS + RocksDB)
+  - Format XFS with reflink=1
+  - Store: XFS with reflink-on-ingest
+  - GC: staged deletes
+  - Metadata DB: RocksDB
+
+- Backups: handled externally (rsync)
+```
+
+</details>
+
+## ⚙️Optimized Store Structure (Bucketed Hashed Store)
+
+<details>
+<summary>Click to see example tree</summary>
+
+```text
+/store/
+└── ab/
+    └── cd/
+        ├── abcd1234-vim/
+        └── abcd5678-libpng/
+```
+
+```text
+Sharding depth:
+- ext4 + sled: 2–3 levels
+- XFS + RocksDB: 1–2 levels
+
+Benefits:
+- Faster filesystem operations (lookup, unlink, GC)
+- Parallel deletion of subtrees
+- DB tracks hash → path + refcounts
+- Optional compression (tar.zst)
+```
+
+</details>
+
+
+## ⚙️Deduplication & Garbage Collection
+
+<details>
+<summary>Click to see features</summary>
+
+```text
+Deduplication:
+- Hash files on write
+- Reflink (XFS) / Hardlink (ext4)
+- No global sweep
+
+Garbage Collection:
+- DB tracks refcounts
+- Steps:
+  1. Mark live roots
+  2. Decrement refcounts for unreachable paths
+  3. Move zero-refcount paths to /store/.trash/
+  4. Background worker deletes contents in parallel
+- Optimizations: hashed subdirs, parallel workers, optional io_uring batching
+```
+
+</details>
+
+## ⚙️Rollbacks
+
+<details>
+<summary>Click to see features</summary>
+
+```text
+Nixos like features:
+- Rollback via profiles
+- GRUB menu entries auto-generated for available generations
+
+Performance Highlights:
+- **Store/Garbage Collection Cleanup:**
+  - NixOS: sequential scan of /nix/store, O(N) with total store size
+  - NexisOS: DB-backed refcount tracking + bucketed hashed store
+    - Cleanup only touches unreferenced items
+    - Parallel deletion of hashed subdirs
+    - Optional io_uring batching for faster disk operations
+  - **Estimated speedup:** 5–20× faster for large stores (1,000+ packages), depending on filesystem and hardware
 ```
 
 </details>
