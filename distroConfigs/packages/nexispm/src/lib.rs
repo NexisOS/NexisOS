@@ -1,11 +1,22 @@
 //! Core library for NexisOS declarative package manager.
 //! Provides store, metadata, garbage collection, generation management, and utilities.
 
+/// Configuration parser
 pub mod config;
+
+/// Store backend
 pub mod store;
+
+/// Metadata management
 pub mod meta;
+
+/// Garbage collection
 pub mod gc;
+
+/// Generation management
 pub mod gen;
+
+/// Utility functions
 pub mod util;
 
 use anyhow::Result;
