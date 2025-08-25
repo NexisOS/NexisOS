@@ -21,7 +21,7 @@ You can try the latest ISO build of NexisOS by downloading it from SourceForge:
 
 ```text
 NexisOS/
-├── depends/                           # All custom code, tools, and scripts
+├── ISODependencies/                   # All custom code, tools, and scripts
 │   ├── configs/                       # Defconfig files to build NexisOS minimal installer ISO
 │   │   ├── NexisOS_x86_64_defconfig
 │   │   ├── NexisOS_aarch64_defconfig
@@ -32,10 +32,11 @@ NexisOS/
 │   │   ├── linux-aarch64.config
 │   │   └── linux-riscv64.config
 │   │
-│   ├── nexis-pkg/                     # Rust source for NexisOS package manager
+│   ├── nexis-pkg-mgr/                 # Rust source for NexisOS package manager
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── main.rs                # CLI + command dispatch
+│   │       ├── lib.rs                 # Core library entry (re-exports store, meta, gc, gen, etc.)
+│   │       ├── main.rs                # CLI + command dispatch (thin layer using the lib)
 │   │       ├── config.rs              # parse /etc/nexis/config.toml
 │   │       ├── store/
 │   │       │   ├── mod.rs             # public store API
