@@ -28,7 +28,7 @@ toml = "0.8"
 config = "0.14"  # More advanced config handling with environment variable support
 
 # Storage backends
-sled = "0.34"
+sled = { version = "0.34", optional = true }
 rocksdb = { version = "0.21", features = ["multi-threaded-cf"] }
 
 # Async runtime and HTTP client for package downloads
