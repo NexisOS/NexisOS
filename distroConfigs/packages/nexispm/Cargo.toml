@@ -3,22 +3,117 @@ name = "nexispm"
 version = "0.1.0"
 edition = "2024"
 authors = ["Kyle Gortych <kyle.gortych.dev@gmail.com>"]
-description = "Declarative system package manager for NexisOS"
+description = "Declarative system package manager for NexisOS with optimized store operations and generation rollbacks"
 license = "GPL-3.0"
 repository = "https://github.com/NexisOS/NexisOS"
+homepage = "https://github.com/NexisOS/NexisOS"
+documentation = "https://github.com/NexisOS/NexisOS"
+readme = "README.md"
+keywords = ["package-manager", "linux", "declarative", "nixos-like", "rollback"]
+categories = ["command-line-utilities", "development-tools", "os"]
 
-[dependencies]
-clap = { version = "4", features = ["derive"] }   # CLI parsing
-sled = "0.34"                                     # store backend for ext4
-rocksdb = "0.21"                                  # store backend for XFS
-serde = { version = "1", features = ["derive"] }  # config serialization
-toml = "0.8"                                      # parse TOML configs
-log = "0.4"                                       # logging
-env_logger = "0.10"                               # simple log initialization
-anyhow = "1.0"                                    # error handling
-thiserror = "1.0"                                 # custom error types
-chrono = "0.4"                                    # timestamps for generations
+[lib]
+name = "nexis_pkg_mgr"
+path = "src/lib.rs"
 
 [[bin]]
-name = "nexis"           # user-facing CLI command
-path = "src/main.rs"     # binary entrypoint
+name = "nexis"
+path = "src/main.rs"
+
+[dependencies]
+# CLI and configuration
+clap = { version = "4.4", features = ["derive", "env", "color"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+toml = "0.8"
+config = "0.14"  # More advanced config handling with environment variable support
+
+# Storage backends
+sled = "0.34"
+rocksdb = { version = "0.21", features = ["multi-threaded-cf"] }
+
+# Async runtime and HTTP client for package downloads
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["stream", "rustls-tls"] }
+futures = "0.3"
+
+# Hashing and cryptography
+sha2 = "0.10"  # SHA-256 hashing for content addressing
+blake3 = "0.4"  # Fast hashing alternative
+ring = "0.17"   # For signature verification
+
+# Compression support
+flate2 = "1.0"  # gzip
+tar = "0.4"     # tar archives
+zstd = "0.13"   # zstd compression
+
+# File system operations
+walkdir = "2.4"  # Efficient directory traversal
+tempfile = "3.8"  # Temporary file handling
+nix = "0.27"     # Unix system calls (reflink, hardlink operations)
+
+# Error handling and logging
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+tracing = { version = "0.1", features = ["log"] }  # Structured logging
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Process management
+subprocess = "0.2"  # For running build commands
+
+# JSON handling (for metadata)
+serde_json = "1.0"
+
+# Path manipulation and glob patterns
+glob = "0.3"
+pathdiff = "0.2"
+
+# System integration
+libc = "0.2"  # For low-level system calls
+which = "4.4"  # Finding executables in PATH
+
+[dev-dependencies]
+tempfile = "3.8"
+assert_fs = "1.0"
+predicates = "3.0"
+tokio-test = "0.4"
+
+[features]
+default = ["ext4-backend", "grub-integration"]
+
+# Storage backend features
+ext4-backend = ["sled"]
+xfs-backend = ["rocksdb"]
+
+# System integration features
+grub-integration = []
+selinux-support = []
+systemd-integration = []
+
+# Performance features
+io-uring = ["tokio-uring"]  # Optional io_uring support
+parallel-gc = []            # Parallel garbage collection
+
+# Development features
+debug-store = []  # Additional debugging for store operations
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+debug = 2
+
+# Optional io_uring dependency (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-uring = { version = "0.4", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
