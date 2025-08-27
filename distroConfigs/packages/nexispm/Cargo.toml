@@ -53,7 +53,7 @@ nix = "0.27"     # Unix system calls (reflink, hardlink operations)
 
 # Error handling and logging
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 log = "0.4"
 env_logger = "0.10"
 tracing = { version = "0.1", features = ["log"] }  # Structured logging
