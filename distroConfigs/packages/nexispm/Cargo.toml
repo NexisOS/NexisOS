@@ -49,7 +49,7 @@ zstd = "0.13"   # zstd compression
 # File system operations
 walkdir = "2.4"  # Efficient directory traversal
 tempfile = "3.8"  # Temporary file handling
-nix = "0.27"     # Unix system calls (reflink, hardlink operations)
+nix = "0.30"     # Unix system calls (reflink, hardlink operations)
 
 # Error handling and logging
 anyhow = "1.0"
