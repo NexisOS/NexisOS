@@ -55,7 +55,7 @@ nix = "0.27"     # Unix system calls (reflink, hardlink operations)
 anyhow = "1.0"
 thiserror = "1.0"
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
 tracing = { version = "0.1", features = ["log"] }  # Structured logging
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
