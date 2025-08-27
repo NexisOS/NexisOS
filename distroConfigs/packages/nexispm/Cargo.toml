@@ -38,7 +38,7 @@ futures = "0.3"
 
 # Hashing and cryptography
 sha2 = "0.10"  # SHA-256 hashing for content addressing
-blake3 = "0.4"  # Fast hashing alternative
+blake3 = "1.8.2"  # Fast hashing alternative
 ring = "0.17"   # For signature verification
 
 # Compression support
