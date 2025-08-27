@@ -1,0 +1,24 @@
+[package]
+name = "nexispm"
+version = "0.1.0"
+edition = "2024"
+authors = ["Kyle Gortych <kyle.gortych.dev@gmail.com>"]
+description = "Declarative system package manager for NexisOS"
+license = "GPL-3.0"
+repository = "https://github.com/NexisOS/NexisOS"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }   # CLI parsing
+sled = "0.34"                                     # store backend for ext4
+rocksdb = "0.21"                                  # store backend for XFS
+serde = { version = "1", features = ["derive"] }  # config serialization
+toml = "0.8"                                      # parse TOML configs
+log = "0.4"                                       # logging
+env_logger = "0.10"                               # simple log initialization
+anyhow = "1.0"                                    # error handling
+thiserror = "1.0"                                 # custom error types
+chrono = "0.4"                                    # timestamps for generations
+
+[[bin]]
+name = "nexis"           # user-facing CLI command
+path = "src/main.rs"     # binary entrypoint
