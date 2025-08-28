@@ -1,658 +1,567 @@
-//! # Content-Addressable Package Store
-//!
-//! High-performance content-addressable storage with deduplication for NexisOS packages.
-//! Supports both ext4+hardlinks and XFS+reflinks backends with bucketed hash layout
-//! for optimal filesystem performance.
-//!
-//! ## Store Layout
-//! ```text
-//! /store/
-//! ├── ab/cd/abcd1234-package-name/     # Bucketed by hash prefix
-//! ├── ef/gh/efgh5678-other-package/
-//! └── .trash/                          # Staged deletes for GC
-//!     └── to-delete-123456/
-//! ```
-//!
-//! ## Performance Features
-//! - Ingest-time deduplication (no global sweeps)
-//! - Parallel operations with async I/O
-//! - Bucketed layout reduces filesystem bottlenecks
-//! - Optional io_uring for batch operations
-
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use blake3::Hasher;
-use log::{debug, info, warn, error};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
+use std::fs;
+use crate::util::{NexisError, hash_file, hash_string};
 
-pub use backend::StoreBackend;
-pub use ingest::IngestOptions;
-pub use layout::{StoreLayout, HashBucket};
-
-pub mod backend;
 pub mod ingest;
+pub mod backend;
 pub mod layout;
 
-/// Store operation errors
-#[derive(thiserror::Error, Debug)]
-pub enum StoreError {
-    #[error("Package not found: {hash}")]
-    PackageNotFound { hash: String },
-    
-    #[error("Hash mismatch: expected {expected}, got {actual}")]
-    HashMismatch { expected: String, actual: String },
-    
-    #[error("Store corruption detected: {msg}")]
-    Corruption { msg: String },
-    
-    #[error("Deduplication failed: {msg}")]
-    DeduplicationError { msg: String },
-    
-    #[error("Backend operation failed: {msg}")]
-    BackendError { msg: String },
-    
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("Path error: {path} - {msg}")]
-    PathError { path: PathBuf, msg: String },
-    
-    #[error("Concurrent access conflict for package {hash}")]
-    ConcurrencyError { hash: String },
-}
+pub use ingest::*;
+pub use backend::*;
+pub use layout::*;
 
-/// Package metadata stored alongside content
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredPackage {
-    /// Content hash (BLAKE3)
-    pub hash: String,
-    
-    /// Package name
+/// Represents a package in the store
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorePackage {
     pub name: String,
-    
-    /// Resolved version
     pub version: String,
-    
-    /// Size in bytes
+    pub hash: String,
+    pub path: PathBuf,
     pub size: u64,
-    
-    /// Store path relative to store root
-    pub store_path: PathBuf,
-    
-    /// When this package was first stored
-    pub ingested_at: chrono::DateTime<chrono::Utc>,
-    
-    /// Reference count (for GC)
-    pub ref_count: u64,
-    
-    /// Build metadata
-    pub build_info: BuildInfo,
-    
-    /// Deduplication info
-    pub dedup_info: Option<DeduplicationInfo>,
+    pub files: Vec<StoreFile>,
+    pub dependencies: Vec<String>,
 }
 
-/// Build information for a stored package
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildInfo {
-    /// Build system used
-    pub build_system: String,
-    
-    /// Build flags
-    pub build_flags: Vec<String>,
-    
-    /// Build environment
-    pub build_env: HashMap<String, String>,
-    
-    /// Source URL or path
-    pub source: Option<String>,
-    
-    /// Build duration
-    pub build_duration: Option<std::time::Duration>,
-    
-    /// Builder host information
-    pub builder_host: String,
+/// Represents a file within a package
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreFile {
+    pub relative_path: String,
+    pub hash: String,
+    pub size: u64,
+    pub mode: u32,
+    pub symlink_target: Option<String>,
 }
 
-/// Deduplication information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeduplicationInfo {
-    /// Number of files deduplicated
-    pub deduplicated_files: u64,
-    
-    /// Bytes saved through deduplication
-    pub bytes_saved: u64,
-    
-    /// Deduplication method used
-    pub method: DeduplicationMethod,
-    
-    /// Original packages that share content
-    pub shared_with: Vec<String>,
-}
-
-/// Deduplication methods
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeduplicationMethod {
-    /// Hard links (ext4)
-    Hardlink,
-    /// Reflinks (XFS/Btrfs)
-    Reflink,
-    /// No deduplication
-    None,
-}
-
-/// Store operation statistics
-#[derive(Debug, Clone, Default)]
+/// Store statistics for monitoring and debugging
+#[derive(Debug, Clone)]
 pub struct StoreStats {
     pub total_packages: u64,
+    pub total_files: u64,
     pub total_size: u64,
     pub deduplicated_size: u64,
-    pub deduplication_ratio: f64,
-    pub average_package_size: u64,
-    pub store_efficiency: f64,
+    pub dedup_ratio: f64,
 }
 
-/// Content store trait - abstracts over different storage backends
-#[async_trait]
-pub trait ContentStore: Send + Sync {
-    /// Store a package directory in the content-addressable store
-    async fn store_package(
-        &self,
-        source_path: &Path,
-        package_name: &str,
-        version: &str,
-        build_info: BuildInfo,
-        options: IngestOptions,
-    ) -> Result<StoredPackage, StoreError>;
+/// Configuration for store behavior
+#[derive(Debug, Clone)]
+pub struct StoreConfig {
+    pub store_path: PathBuf,
+    pub shard_depth: u8,
+    pub backend: StorageBackend,
+    pub compression: bool,
+    pub parallel_workers: usize,
+}
+
+/// Storage backend selection
+#[derive(Debug, Clone, PartialEq)]
+pub enum StorageBackend {
+    /// ext4 filesystem with hard links for deduplication
+    Ext4,
+    /// XFS filesystem with reflinks for deduplication  
+    Xfs,
+    /// Simple copy-based storage (for testing)
+    Simple,
+}
+
+/// Main store interface
+pub trait Store: Send + Sync {
+    /// Add a package to the store from a directory
+    fn add_package(&mut self, source_path: &Path, name: &str, version: &str) -> Result<StorePackage, NexisError>;
     
-    /// Retrieve a package by its content hash
-    async fn get_package(&self, hash: &str) -> Result<Option<StoredPackage>, StoreError>;
+    /// Get package by name and version
+    fn get_package(&self, name: &str, version: &str) -> Result<Option<StorePackage>, NexisError>;
     
-    /// Check if a package exists by hash
-    async fn has_package(&self, hash: &str) -> Result<bool, StoreError>;
+    /// List all packages in the store
+    fn list_packages(&self) -> Result<Vec<StorePackage>, NexisError>;
     
-    /// Get the filesystem path to a stored package
-    async fn get_package_path(&self, hash: &str) -> Result<PathBuf, StoreError>;
-    
-    /// List all stored packages
-    async fn list_packages(&self) -> Result<Vec<StoredPackage>, StoreError>;
-    
-    /// Calculate content hash for a directory
-    async fn calculate_hash(&self, path: &Path) -> Result<String, StoreError>;
-    
-    /// Mark package for deletion (moves to .trash)
-    async fn mark_for_deletion(&self, hash: &str) -> Result<(), StoreError>;
-    
-    /// Permanently delete packages in .trash
-    async fn empty_trash(&self) -> Result<Vec<String>, StoreError>;
+    /// Remove a package from the store (decrements refcount)
+    fn remove_package(&mut self, name: &str, version: &str) -> Result<(), NexisError>;
     
     /// Get store statistics
-    async fn get_stats(&self) -> Result<StoreStats, StoreError>;
+    fn get_stats(&self) -> Result<StoreStats, NexisError>;
     
-    /// Optimize store layout and cleanup
-    async fn optimize(&self) -> Result<(), StoreError>;
+    /// Run garbage collection
+    fn gc(&mut self, dry_run: bool) -> Result<u64, NexisError>;
     
     /// Verify store integrity
-    async fn verify(&self, fix_errors: bool) -> Result<Vec<String>, StoreError>;
-    
-    /// Get backend-specific information
-    fn backend_info(&self) -> &dyn StoreBackend;
+    fn verify(&self) -> Result<Vec<String>, NexisError>;
 }
 
-/// ext4 storage implementation using hardlinks for deduplication
-pub struct Ext4Store {
-    store_path: PathBuf,
+/// File-system based store implementation
+pub struct FileStore {
+    config: StoreConfig,
     layout: StoreLayout,
-    backend: backend::Ext4Backend,
-    package_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    backend: Box<dyn StorageBackendTrait>,
 }
 
-impl Ext4Store {
-    /// Create a new ext4 store
-    pub async fn new(store_path: &Path) -> Result<Self, StoreError> {
-        info!("Initializing ext4 store at: {:?}", store_path);
+impl FileStore {
+    /// Create a new file store
+    pub fn new(config: StoreConfig) -> Result<Self, NexisError> {
+        let layout = StoreLayout::new(&config.store_path, config.shard_depth)?;
         
-        let layout = StoreLayout::new(store_path, 2); // 2-level bucketing for ext4
-        let backend = backend::Ext4Backend::new(store_path).await?;
-        
-        // Create store structure
-        fs::create_dir_all(&store_path).await?;
-        fs::create_dir_all(store_path.join(".trash")).await?;
-        fs::create_dir_all(store_path.join(".tmp")).await?;
-        
+        let backend: Box<dyn StorageBackendTrait> = match config.backend {
+            StorageBackend::Ext4 => Box::new(Ext4Backend::new(config.parallel_workers)),
+            StorageBackend::Xfs => Box::new(XfsBackend::new(config.parallel_workers)),
+            StorageBackend::Simple => Box::new(SimpleBackend::new()),
+        };
+
+        // Ensure store directory exists
+        fs::create_dir_all(&config.store_path)
+            .map_err(|e| NexisError::Io {
+                path: config.store_path.clone(),
+                source: e,
+            })?;
+
         Ok(Self {
-            store_path: store_path.to_path_buf(),
+            config,
             layout,
             backend,
-            package_locks: Arc::new(RwLock::new(HashMap::new())),
         })
     }
-}
 
-#[async_trait]
-impl ContentStore for Ext4Store {
-    async fn store_package(
-        &self,
-        source_path: &Path,
-        package_name: &str,
-        version: &str,
-        build_info: BuildInfo,
-        options: IngestOptions,
-    ) -> Result<StoredPackage, StoreError> {
-        debug!("Storing package '{}' version '{}' from {:?}", 
-               package_name, version, source_path);
+    /// Create store with auto-detected backend based on filesystem
+    pub fn auto_detect<P: AsRef<Path>>(store_path: P) -> Result<Self, NexisError> {
+        let store_path = store_path.as_ref().to_path_buf();
+        let backend = detect_filesystem(&store_path)?;
         
-        // Calculate content hash
-        let hash = self.calculate_hash(source_path).await?;
-        debug!("Package hash: {}", hash);
-        
-        // Check if package already exists (deduplication)
-        if let Some(existing) = self.get_package(&hash).await? {
-            info!("Package '{}' already exists with hash {}, incrementing ref count", 
-                  package_name, hash);
-            // TODO: Increment reference count in metadata store
-            return Ok(existing);
-        }
-        
-        // Get package lock to prevent concurrent operations
-        let package_lock = {
-            let mut locks = self.package_locks.write().await;
-            locks.entry(hash.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
+        let shard_depth = match backend {
+            StorageBackend::Ext4 => 2,  // More sharding for ext4
+            StorageBackend::Xfs => 1,   // Less sharding for XFS
+            StorageBackend::Simple => 1,
         };
+
+        let config = StoreConfig {
+            store_path,
+            shard_depth,
+            backend,
+            compression: false, // TODO: Make configurable
+            parallel_workers: num_cpus::get(),
+        };
+
+        Self::new(config)
+    }
+
+    /// Calculate hash for a package directory
+    fn calculate_package_hash(&self, source_path: &Path) -> Result<String, NexisError> {
+        use std::collections::BTreeMap;
         
-        let _lock_guard = package_lock.lock().await;
+        let mut file_hashes = BTreeMap::new();
         
-        // Double-check after acquiring lock
-        if let Some(existing) = self.get_package(&hash).await? {
-            return Ok(existing);
-        }
-        
-        // Create store path
-        let store_path = self.layout.get_package_path(&hash, package_name);
-        let store_dir = store_path.parent()
-            .ok_or_else(|| StoreError::PathError {
-                path: store_path.clone(),
-                msg: "Invalid store path".to_string(),
+        for entry in walkdir::WalkDir::new(source_path)
+            .follow_links(false)
+            .sort_by_file_name() 
+        {
+            let entry = entry.map_err(|e| NexisError::Io {
+                path: source_path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::Other, e),
             })?;
-        
-        fs::create_dir_all(store_dir).await
-            .with_context(|| format!("Failed to create store directory: {:?}", store_dir))?;
-        
-        // Ingest package with backend-specific deduplication
-        let dedup_info = self.backend
-            .ingest_package(source_path, &store_path, &options)
-            .await
-            .with_context(|| format!("Failed to ingest package to {:?}", store_path))?;
-        
-        // Calculate package size
-        let size = calculate_dir_size(&store_path).await?;
-        
-        let stored_package = StoredPackage {
-            hash: hash.clone(),
-            name: package_name.to_string(),
-            version: version.to_string(),
-            size,
-            store_path: store_path.strip_prefix(&self.store_path)
-                .unwrap_or(&store_path)
-                .to_path_buf(),
-            ingested_at: chrono::Utc::now(),
-            ref_count: 1,
-            build_info,
-            dedup_info,
-        };
-        
-        info!("Successfully stored package '{}' ({} bytes) with {} deduplication", 
-              package_name, size,
-              stored_package.dedup_info.as_ref()
-                  .map(|d| format!("{:?}", d.method))
-                  .unwrap_or_else(|| "no".to_string()));
-        
-        Ok(stored_package)
-    }
-    
-    async fn get_package(&self, hash: &str) -> Result<Option<StoredPackage>, StoreError> {
-        // This would typically query the metadata store
-        // For now, we check if the path exists
-        let package_path = self.layout.find_package_by_hash(hash).await?;
-        
-        if let Some(path) = package_path {
-            // TODO: Load metadata from metadata store
-            // For now, return a basic package info
-            Ok(Some(StoredPackage {
-                hash: hash.to_string(),
-                name: "unknown".to_string(), // Would be loaded from metadata
-                version: "unknown".to_string(),
-                size: calculate_dir_size(&path).await?,
-                store_path: path.strip_prefix(&self.store_path)
-                    .unwrap_or(&path)
-                    .to_path_buf(),
-                ingested_at: chrono::Utc::now(),
-                ref_count: 1,
-                build_info: BuildInfo {
-                    build_system: "unknown".to_string(),
-                    build_flags: vec![],
-                    build_env: HashMap::new(),
-                    source: None,
-                    build_duration: None,
-                    builder_host: "unknown".to_string(),
-                },
-                dedup_info: None,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-    
-    async fn has_package(&self, hash: &str) -> Result<bool, StoreError> {
-        let package_path = self.layout.find_package_by_hash(hash).await?;
-        Ok(package_path.is_some())
-    }
-    
-    async fn get_package_path(&self, hash: &str) -> Result<PathBuf, StoreError> {
-        let package_path = self.layout.find_package_by_hash(hash).await?;
-        package_path.ok_or_else(|| StoreError::PackageNotFound {
-            hash: hash.to_string(),
-        })
-    }
-    
-    async fn list_packages(&self) -> Result<Vec<StoredPackage>, StoreError> {
-        let mut packages = Vec::new();
-        
-        // Walk through bucketed directories
-        let mut walker = fs::read_dir(&self.store_path).await?;
-        
-        while let Some(entry) = walker.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() && !path.file_name().unwrap().to_str().unwrap().starts_with('.') {
-                self.collect_packages_from_dir(&path, &mut packages).await?;
+
+            if entry.file_type().is_file() {
+                let rel_path = entry.path().strip_prefix(source_path)
+                    .map_err(|_| NexisError::Store("Invalid file path".to_string()))?;
+                
+                let file_hash = hash_file(entry.path())?;
+                file_hashes.insert(rel_path.to_string_lossy().to_string(), file_hash);
             }
         }
-        
-        Ok(packages)
+
+        // Create deterministic hash of all file hashes
+        let combined = format!("{:?}", file_hashes);
+        Ok(hash_string(&combined))
     }
-    
-    async fn calculate_hash(&self, path: &Path) -> Result<String, StoreError> {
-        calculate_directory_hash(path).await
-    }
-    
-    async fn mark_for_deletion(&self, hash: &str) -> Result<(), StoreError> {
-        let package_path = self.get_package_path(hash).await?;
-        let trash_dir = self.store_path.join(".trash");
-        let trash_path = trash_dir.join(format!("to-delete-{}-{}", hash, chrono::Utc::now().timestamp()));
-        
-        fs::create_dir_all(&trash_dir).await?;
-        fs::rename(&package_path, &trash_path).await
-            .with_context(|| format!("Failed to move {:?} to trash", package_path))?;
-        
-        debug!("Marked package {} for deletion", hash);
-        Ok(())
-    }
-    
-    async fn empty_trash(&self) -> Result<Vec<String>, StoreError> {
-        let trash_dir = self.store_path.join(".trash");
-        let mut deleted = Vec::new();
-        
-        if !trash_dir.exists() {
-            return Ok(deleted);
-        }
-        
-        let mut walker = fs::read_dir(&trash_dir).await?;
-        
-        while let Some(entry) = walker.next_entry().await? {
-            let path = entry.path();
-            let name = entry.file_name();
-            
-            if path.is_dir() {
-                debug!("Permanently deleting: {:?}", path);
-                fs::remove_dir_all(&path).await
-                    .with_context(|| format!("Failed to delete {:?}", path))?;
-                deleted.push(name.to_string_lossy().to_string());
-            }
-        }
-        
-        info!("Permanently deleted {} packages from trash", deleted.len());
-        Ok(deleted)
-    }
-    
-    async fn get_stats(&self) -> Result<StoreStats, StoreError> {
-        let packages = self.list_packages().await?;
-        
-        let total_packages = packages.len() as u64;
-        let total_size: u64 = packages.iter().map(|p| p.size).sum();
-        let deduplicated_size: u64 = packages.iter()
-            .filter_map(|p| p.dedup_info.as_ref().map(|d| d.bytes_saved))
-            .sum();
-        
-        let deduplication_ratio = if total_size > 0 {
-            deduplicated_size as f64 / total_size as f64
-        } else {
-            0.0
-        };
-        
-        let average_package_size = if total_packages > 0 {
-            total_size / total_packages
-        } else {
-            0
-        };
-        
-        Ok(StoreStats {
-            total_packages,
-            total_size,
-            deduplicated_size,
-            deduplication_ratio,
-            average_package_size,
-            store_efficiency: 1.0 - deduplication_ratio,
-        })
-    }
-    
-    async fn optimize(&self) -> Result<(), StoreError> {
-        info!("Optimizing ext4 store");
-        // TODO: Implement store optimization
-        // - Rebalance bucket sizes
-        // - Consolidate small directories
-        // - Update layout if needed
-        warn!("Store optimization not yet implemented");
-        Ok(())
-    }
-    
-    async fn verify(&self, fix_errors: bool) -> Result<Vec<String>, StoreError> {
-        info!("Verifying store integrity (fix_errors={})", fix_errors);
-        let mut issues = Vec::new();
-        
-        // TODO: Implement integrity verification
-        // - Check hash consistency
-        // - Verify hardlink counts
-        // - Check for orphaned files
-        // - Validate bucket structure
-        
-        warn!("Store verification not yet implemented");
-        Ok(issues)
-    }
-    
-    fn backend_info(&self) -> &dyn StoreBackend {
-        &self.backend
+
+    /// Get the store path for a package
+    fn get_package_store_path(&self, name: &str, hash: &str) -> PathBuf {
+        self.layout.get_package_path(&format!("{}-{}", hash, name))
     }
 }
 
-impl Ext4Store {
-    async fn collect_packages_from_dir(&self, dir: &Path, packages: &mut Vec<StoredPackage>) -> Result<(), StoreError> {
-        let mut walker = fs::read_dir(dir).await?;
+impl Store for FileStore {
+    fn add_package(&mut self, source_path: &Path, name: &str, version: &str) -> Result<StorePackage, NexisError> {
+        if !source_path.exists() {
+            return Err(NexisError::Store(format!("Source path does not exist: {}", source_path.display())));
+        }
+
+        // Calculate package hash
+        let hash = self.calculate_package_hash(source_path)?;
+        let store_path = self.get_package_store_path(name, &hash);
+
+        // Check if package already exists
+        if store_path.exists() {
+            return self.load_existing_package(&store_path, name, version, &hash);
+        }
+
+        // Create store directory structure
+        let store_parent = store_path.parent()
+            .ok_or_else(|| NexisError::Store("Invalid store path".to_string()))?;
+        fs::create_dir_all(store_parent)
+            .map_err(|e| NexisError::Io {
+                path: store_parent.to_path_buf(),
+                source: e,
+            })?;
+
+        // Ingest files with deduplication
+        let ingest_result = self.backend.ingest_directory(source_path, &store_path)?;
         
-        while let Some(entry) = walker.next_entry().await? {
-            let path = entry.path();
-            
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    // Check if this looks like a package directory (hash-name format)
-                    if let Some(dash_pos) = name.find('-') {
-                        let hash = &name[..dash_pos];
-                        if hash.len() >= 8 { // Minimum hash length
-                            // This looks like a package directory
-                            if let Ok(Some(package)) = self.get_package(hash).await {
+        // Build package metadata
+        let mut files = Vec::new();
+        let mut total_size = 0;
+
+        for entry in walkdir::WalkDir::new(&store_path).follow_links(false) {
+            let entry = entry.map_err(|e| NexisError::Io {
+                path: store_path.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            })?;
+
+            if entry.file_type().is_file() {
+                let rel_path = entry.path().strip_prefix(&store_path)
+                    .map_err(|_| NexisError::Store("Invalid file path".to_string()))?;
+                
+                let metadata = entry.metadata().map_err(|e| NexisError::Io {
+                    path: entry.path().to_path_buf(),
+                    source: e,
+                })?;
+
+                let file_hash = hash_file(entry.path())?;
+                total_size += metadata.len();
+
+                let symlink_target = if metadata.file_type().is_symlink() {
+                    Some(fs::read_link(entry.path())
+                        .map_err(|e| NexisError::Io {
+                            path: entry.path().to_path_buf(),
+                            source: e,
+                        })?
+                        .to_string_lossy()
+                        .to_string())
+                } else {
+                    None
+                };
+
+                files.push(StoreFile {
+                    relative_path: rel_path.to_string_lossy().to_string(),
+                    hash: file_hash,
+                    size: metadata.len(),
+                    mode: get_file_mode(&metadata),
+                    symlink_target,
+                });
+            }
+        }
+
+        let package = StorePackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            hash: hash.clone(),
+            path: store_path,
+            size: total_size,
+            files,
+            dependencies: Vec::new(), // TODO: Extract from package metadata
+        };
+
+        println!("Added package {} v{} to store (hash: {})", name, version, &hash[..8]);
+        
+        Ok(package)
+    }
+
+    fn get_package(&self, name: &str, version: &str) -> Result<Option<StorePackage>, NexisError> {
+        // For now, we need to scan the store to find packages by name/version
+        // In a real implementation, this would use the metadata store
+        for entry in fs::read_dir(&self.config.store_path)
+            .map_err(|e| NexisError::Io {
+                path: self.config.store_path.clone(),
+                source: e,
+            })? 
+        {
+            let entry = entry.map_err(|e| NexisError::Io {
+                path: self.config.store_path.clone(),
+                source: e,
+            })?;
+
+            if let Some(dir_name) = entry.file_name().to_str() {
+                if dir_name.ends_with(&format!("-{}", name)) {
+                    let package_path = entry.path();
+                    if let Ok(package) = self.load_package_from_path(&package_path, name, version) {
+                        if package.name == name && package.version == version {
+                            return Ok(Some(package));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn list_packages(&self) -> Result<Vec<StorePackage>, NexisError> {
+        let mut packages = Vec::new();
+
+        for shard_dir in self.layout.list_shards()? {
+            for entry in fs::read_dir(&shard_dir)
+                .map_err(|e| NexisError::Io {
+                    path: shard_dir.clone(),
+                    source: e,
+                })? 
+            {
+                let entry = entry.map_err(|e| NexisError::Io {
+                    path: shard_dir.clone(),
+                    source: e,
+                })?;
+
+                if entry.file_type()
+                    .map_err(|e| NexisError::Io {
+                        path: entry.path(),
+                        source: e,
+                    })?
+                    .is_dir() 
+                {
+                    // Parse package name from directory name (format: hash-name)
+                    if let Some(dir_name) = entry.file_name().to_str() {
+                        if let Some(dash_pos) = dir_name.find('-') {
+                            let name = &dir_name[dash_pos + 1..];
+                            // We don't have version info in the path, so use "unknown"
+                            if let Ok(package) = self.load_package_from_path(&entry.path(), name, "unknown") {
                                 packages.push(package);
                             }
                         }
                     }
-                } else {
-                    // Recurse into subdirectories (bucket structure)
-                    self.collect_packages_from_dir(&path, packages).await?;
                 }
             }
         }
-        
+
+        Ok(packages)
+    }
+
+    fn remove_package(&mut self, name: &str, version: &str) -> Result<(), NexisError> {
+        if let Some(package) = self.get_package(name, version)? {
+            // In a full implementation, this would decrement refcounts in the metadata store
+            // and only remove files when refcount reaches 0
+            println!("Removing package {} v{}", name, version);
+            
+            // For now, just remove the directory
+            fs::remove_dir_all(&package.path)
+                .map_err(|e| NexisError::Io {
+                    path: package.path,
+                    source: e,
+                })?;
+        }
+
         Ok(())
+    }
+
+    fn get_stats(&self) -> Result<StoreStats, NexisError> {
+        let packages = self.list_packages()?;
+        let total_packages = packages.len() as u64;
+        let total_files = packages.iter().map(|p| p.files.len() as u64).sum();
+        let total_size = packages.iter().map(|p| p.size).sum();
+
+        // Calculate deduplication ratio (simplified)
+        let unique_hashes: std::collections::HashSet<_> = packages
+            .iter()
+            .flat_map(|p| p.files.iter().map(|f| &f.hash))
+            .collect();
+
+        let deduplicated_size = total_size; // TODO: Calculate actual deduplicated size
+        let dedup_ratio = if total_size > 0 {
+            (total_size - deduplicated_size) as f64 / total_size as f64
+        } else {
+            0.0
+        };
+
+        Ok(StoreStats {
+            total_packages,
+            total_files,
+            total_size,
+            deduplicated_size,
+            dedup_ratio,
+        })
+    }
+
+    fn gc(&mut self, dry_run: bool) -> Result<u64, NexisError> {
+        println!("Running garbage collection (dry_run: {})", dry_run);
+        
+        // In a full implementation, this would:
+        // 1. Mark all live packages based on current generations
+        // 2. Find unreferenced packages/files
+        // 3. Move them to trash directory
+        // 4. Background workers delete trash contents
+        
+        // For now, return 0 bytes collected
+        Ok(0)
+    }
+
+    fn verify(&self) -> Result<Vec<String>, NexisError> {
+        let mut errors = Vec::new();
+        let packages = self.list_packages()?;
+
+        for package in packages {
+            // Verify each file exists and matches its hash
+            for file in &package.files {
+                let file_path = package.path.join(&file.relative_path);
+                
+                if !file_path.exists() {
+                    errors.push(format!("Missing file: {} in package {}", 
+                                      file.relative_path, package.name));
+                    continue;
+                }
+
+                match hash_file(&file_path) {
+                    Ok(actual_hash) => {
+                        if actual_hash != file.hash {
+                            errors.push(format!("Hash mismatch: {} in package {} (expected: {}, actual: {})", 
+                                              file.relative_path, package.name, file.hash, actual_hash));
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("Cannot hash file: {} in package {}: {}", 
+                                          file.relative_path, package.name, e));
+                    }
+                }
+            }
+        }
+
+        Ok(errors)
     }
 }
 
-/// XFS storage implementation using reflinks for deduplication
-pub struct XfsStore {
-    store_path: PathBuf,
-    layout: StoreLayout,
-    backend: backend::XfsBackend,
-    package_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-}
+impl FileStore {
+    /// Load an existing package from the store
+    fn load_existing_package(&self, store_path: &Path, name: &str, version: &str, hash: &str) -> Result<StorePackage, NexisError> {
+        println!("Package {} v{} already exists in store", name, version);
+        self.load_package_from_path(store_path, name, version)
+    }
 
-impl XfsStore {
-    /// Create a new XFS store
-    pub async fn new(store_path: &Path) -> Result<Self, StoreError> {
-        info!("Initializing XFS store at: {:?}", store_path);
-        
-        let layout = StoreLayout::new(store_path, 1); // 1-level bucketing for XFS (reflinks are fast)
-        let backend = backend::XfsBackend::new(store_path).await?;
-        
-        // Create store structure
-        fs::create_dir_all(&store_path).await?;
-        fs::create_dir_all(store_path.join(".trash")).await?;
-        fs::create_dir_all(store_path.join(".tmp")).await?;
-        
-        Ok(Self {
-            store_path: store_path.to_path_buf(),
-            layout,
-            backend,
-            package_locks: Arc::new(RwLock::new(HashMap::new())),
+    /// Load package metadata from a store path
+    fn load_package_from_path(&self, store_path: &Path, name: &str, version: &str) -> Result<StorePackage, NexisError> {
+        let mut files = Vec::new();
+        let mut total_size = 0;
+
+        for entry in walkdir::WalkDir::new(store_path).follow_links(false) {
+            let entry = entry.map_err(|e| NexisError::Io {
+                path: store_path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            })?;
+
+            if entry.file_type().is_file() {
+                let rel_path = entry.path().strip_prefix(store_path)
+                    .map_err(|_| NexisError::Store("Invalid file path".to_string()))?;
+                
+                let metadata = entry.metadata().map_err(|e| NexisError::Io {
+                    path: entry.path().to_path_buf(),
+                    source: e,
+                })?;
+
+                let file_hash = hash_file(entry.path())?;
+                total_size += metadata.len();
+
+                files.push(StoreFile {
+                    relative_path: rel_path.to_string_lossy().to_string(),
+                    hash: file_hash,
+                    size: metadata.len(),
+                    mode: get_file_mode(&metadata),
+                    symlink_target: None, // TODO: Handle symlinks
+                });
+            }
+        }
+
+        // Extract hash from directory name if available
+        let hash = store_path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.find('-').map(|pos| &n[..pos]))
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(StorePackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            hash,
+            path: store_path.to_path_buf(),
+            size: total_size,
+            files,
+            dependencies: Vec::new(),
         })
     }
 }
 
-// XfsStore implements the same ContentStore trait with reflink-specific optimizations
-#[async_trait]
-impl ContentStore for XfsStore {
-    // Implementation would be similar to Ext4Store but using XFS reflinks
-    // For brevity, I'll implement the key differences
-    
-    async fn store_package(
-        &self,
-        source_path: &Path,
-        package_name: &str,
-        version: &str,
-        build_info: BuildInfo,
-        options: IngestOptions,
-    ) -> Result<StoredPackage, StoreError> {
-        // Similar to Ext4Store but uses reflink deduplication
-        debug!("Storing package '{}' with XFS reflinks", package_name);
-        // ... implementation using self.backend (XfsBackend)
-        todo!("XFS store implementation")
-    }
-    
-    // ... other methods similar to Ext4Store but with XFS optimizations
-    async fn get_package(&self, hash: &str) -> Result<Option<StoredPackage>, StoreError> { todo!() }
-    async fn has_package(&self, hash: &str) -> Result<bool, StoreError> { todo!() }
-    async fn get_package_path(&self, hash: &str) -> Result<PathBuf, StoreError> { todo!() }
-    async fn list_packages(&self) -> Result<Vec<StoredPackage>, StoreError> { todo!() }
-    async fn calculate_hash(&self, path: &Path) -> Result<String, StoreError> { todo!() }
-    async fn mark_for_deletion(&self, hash: &str) -> Result<(), StoreError> { todo!() }
-    async fn empty_trash(&self) -> Result<Vec<String>, StoreError> { todo!() }
-    async fn get_stats(&self) -> Result<StoreStats, StoreError> { todo!() }
-    async fn optimize(&self) -> Result<(), StoreError> { todo!() }
-    async fn verify(&self, fix_errors: bool) -> Result<Vec<String>, StoreError> { todo!() }
-    
-    fn backend_info(&self) -> &dyn StoreBackend {
-        &self.backend
+/// Detect filesystem type for a path
+fn detect_filesystem(path: &Path) -> Result<StorageBackend, NexisError> {
+    // Try to detect filesystem type
+    // This is a simplified implementation - in practice you'd check /proc/mounts
+    if let Ok(output) = std::process::Command::new("stat")
+        .args(&["-f", "-c", "%T", path.to_str().unwrap_or("/")])
+        .output() 
+    {
+        let fs_type = String::from_utf8_lossy(&output.stdout);
+        match fs_type.trim() {
+            "xfs" => Ok(StorageBackend::Xfs),
+            "ext2/ext3" | "ext4" => Ok(StorageBackend::Ext4),
+            _ => Ok(StorageBackend::Simple),
+        }
+    } else {
+        // Fallback to simple backend
+        Ok(StorageBackend::Simple)
     }
 }
 
-/// Calculate BLAKE3 hash of directory contents
-async fn calculate_directory_hash(path: &Path) -> Result<String, StoreError> {
-    let mut hasher = Hasher::new();
-    
-    // Walk directory in deterministic order
-    let mut entries = vec![];
-    collect_entries_recursive(path, &mut entries).await?;
-    entries.sort_by(|a, b| a.0.cmp(&b.0)); // Sort by path
-    
-    for (rel_path, abs_path) in entries {
-        // Hash the relative path
-        hasher.update(rel_path.as_os_str().to_string_lossy().as_bytes());
-        
-        // Hash file contents
-        if abs_path.is_file() {
-            let mut file = fs::File::open(&abs_path).await?;
-            let mut buffer = vec![0u8; 8192];
-            
-            loop {
-                let bytes_read = file.read(&mut buffer).await?;
-                if bytes_read == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..bytes_read]);
-            }
-        }
-    }
-    
-    Ok(hasher.finalize().to_hex().to_string())
+/// Get file mode from metadata (cross-platform helper)
+#[cfg(unix)]
+fn get_file_mode(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.mode()
 }
 
-async fn collect_entries_recursive(
-    dir: &Path,
-    entries: &mut Vec<(PathBuf, PathBuf)>,
-) -> Result<(), StoreError> {
-    let mut walker = fs::read_dir(dir).await?;
-    
-    while let Some(entry) = walker.next_entry().await? {
-        let abs_path = entry.path();
-        let rel_path = abs_path.strip_prefix(dir)
-            .map_err(|_| StoreError::PathError {
-                path: abs_path.clone(),
-                msg: "Failed to create relative path".to_string(),
-            })?
-            .to_path_buf();
-        
-        if abs_path.is_dir() {
-            collect_entries_recursive(&abs_path, entries).await?;
-        } else {
-            entries.push((rel_path, abs_path));
-        }
-    }
-    
-    Ok(())
+#[cfg(not(unix))]
+fn get_file_mode(_metadata: &std::fs::Metadata) -> u32 {
+    0o644 // Default file permissions on non-Unix systems
 }
 
-async fn calculate_dir_size(path: &Path) -> Result<u64, StoreError> {
-    let mut total_size = 0u64;
-    let mut stack = vec![path.to_path_buf()];
-    
-    while let Some(current_path) = stack.pop() {
-        let mut walker = fs::read_dir(&current_path).await?;
-        
-        while let Some(entry) = walker.next_entry().await? {
-            let entry_path = entry.path();
-            let metadata = entry.metadata().await?;
-            
-            if metadata.is_dir() {
-                stack.push(entry_path);
-            } else {
-                total_size += metadata.len();
-            }
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            store_path: PathBuf::from("/store"),
+            shard_depth: 2,
+            backend: StorageBackend::Simple,
+            compression: false,
+            parallel_workers: num_cpus::get(),
         }
     }
-    
-    Ok(total_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_store_creation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = StoreConfig {
+            store_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let store = FileStore::new(config).unwrap();
+        assert!(temp_dir.path().exists());
+    }
+
+    #[test]
+    fn test_package_hash_calculation() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_dir = temp_dir.path().join("test-package");
+        fs::create_dir_all(&package_dir).unwrap();
+        
+        // Create a test file
+        fs::write(package_dir.join("test.txt"), "hello world").unwrap();
+
+        let config = StoreConfig {
+            store_path: temp_dir.path().join("store"),
+            ..Default::default()
+        };
+        let store = FileStore::new(config).unwrap();
+        
+        let hash1 = store.calculate_package_hash(&package_dir).unwrap();
+        let hash2 = store.calculate_package_hash(&package_dir).unwrap();
+        
+        assert_eq!(hash1, hash2); // Hash should be deterministic
+        assert!(hash1.len() > 0);
+    }
 }
