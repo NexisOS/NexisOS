@@ -4,11 +4,28 @@ members = [
 ]
 resolver = "2"
 
+# Workspace-wide dependencies for version consistency
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+tracing = "0.1"
+
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+opt-level = 3
 
 [profile.dev]
 debug = 2
+opt-level = 0
+
+# Profile for development with some optimizations but faster compile times
+[profile.dev-opt]
+inherits = "dev"
+opt-level = 1
+debug = 1
