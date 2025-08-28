@@ -24,12 +24,12 @@ path = "src/main.rs"
 # CLI and configuration
 clap = { version = "4.4", features = ["derive", "env", "color"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
-toml = "0.8"
-config = "0.14"
+toml = "0.9"
+config = "0.15"
 
 # Storage backends
 sled = { version = "0.34", optional = true }
-rocksdb = { version = "0.22", features = ["multi-threaded-cf"], optional = true }
+rocksdb = { version = "0.24", features = ["multi-threaded-cf"], optional = true }
 
 # Async runtime and HTTP client
 tokio = { version = "1.0", features = ["full"] }
@@ -49,7 +49,7 @@ zstd = "0.13"
 # File system operations
 walkdir = "2.5"
 tempfile = "3.10"
-nix = { version = "0.29", features = ["fs"] }
+nix = { version = "0.30", features = ["fs"] }
 
 # Error handling and logging
 anyhow = "1.0"
