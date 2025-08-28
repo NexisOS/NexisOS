@@ -1,2 +1,19 @@
 createdISOs/*
 !createdISOs/.gitkeep
+
+# Rust build artifacts (global)
+target/
+**/target/
+debug/
+**/debug/
+*.pdb
+*.rs.bk
+
+# Ignore Cargo.lock in the root (if workspace-managed)
+Cargo.lock
+
+# Mutation testing output
+**/mutants.out*/
+
+# IDE settings (optional)
+.idea/
