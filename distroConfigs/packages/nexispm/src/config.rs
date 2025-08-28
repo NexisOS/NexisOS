@@ -1,55 +1,28 @@
-//! # Configuration Management
-//!
-//! Handles parsing and validation of NexisOS system configuration files.
-//! Supports declarative package definitions with "latest" version resolution,
-//! system settings, user management, and service definitions.
-
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use crate::util::NexisError;
 
-/// Main configuration error types
-#[derive(thiserror::Error, Debug)]
-pub enum ConfigError {
-    #[error("Configuration file not found: {path}")]
-    FileNotFound { path: PathBuf },
-    
-    #[error("Invalid TOML syntax: {0}")]
-    TomlParse(#[from] toml::de::Error),
-    
-    #[error("I/O error reading config: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("Invalid configuration: {msg}")]
-    Validation { msg: String },
-    
-    #[error("Missing required field: {field}")]
-    MissingField { field: String },
-    
-    #[error("Invalid include path: {path}")]
-    InvalidInclude { path: PathBuf },
-}
-
-/// Root configuration structure
+/// Main configuration structure matching the TOML format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexisConfig {
     pub system: SystemConfig,
+    #[serde(default)]
     pub users: HashMap<String, UserConfig>,
+    #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub includes: IncludesConfig,
+    #[serde(default)]
     pub packages: Vec<PackageConfig>,
-    pub config_files: HashMap<String, ConfigFileTemplate>,
+    #[serde(default)]
+    pub config_files: HashMap<String, ConfigFile>,
+    #[serde(default)]
     pub dinit_services: HashMap<String, DinitService>,
-    pub log_rotation: Vec<LogRotationConfig>,
-    pub includes: Option<IncludesConfig>,
-    
-    /// Internal field to track config file path for relative includes
-    #[serde(skip)]
-    pub config_dir: PathBuf,
+    #[serde(default)]
+    pub log_rotation: Vec<LogRotation>,
 }
 
-/// System-level configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
     pub hostname: String,
@@ -57,202 +30,138 @@ pub struct SystemConfig {
     pub version: String,
     pub kernel: String,
     pub kernel_source: String,
-    pub kernel_config: PathBuf,
-    
-    /// Storage backend: "ext4" or "xfs"
-    #[serde(default = "default_storage_backend")]
-    pub storage_backend: String,
-    
-    /// Where packages are stored (content-addressable store)
-    #[serde(default = "default_store_path")]
-    pub store_path: PathBuf,
-    
-    /// GRUB configuration path for generation menu entries
-    #[serde(default = "default_grub_config")]
-    pub grub_config_path: PathBuf,
-    
-    /// SELinux configuration
-    pub selinux: Option<SelinuxConfig>,
-    
-    /// Firewall configuration
-    pub firewall: Option<FirewallConfig>,
-    
-    /// Locale settings
-    pub locale: Option<LocaleConfig>,
+    pub kernel_config: String,
+    #[serde(default)]
+    pub selinux: SelinuxConfig,
+    #[serde(default)]
+    pub firewall: FirewallConfig,
+    #[serde(default)]
+    pub locale: LocaleConfig,
 }
 
-/// SELinux configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SelinuxConfig {
+    #[serde(default)]
     pub enabled: bool,
-    /// "enforcing", "permissive", or "disabled"
+    #[serde(default = "default_selinux_mode")]
     pub mode: String,
 }
 
-/// Firewall configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn default_selinux_mode() -> String {
+    "enforcing".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FirewallConfig {
-    /// "nftables", "iptables", or "firewalld"
+    #[serde(default = "default_firewall_backend")]
     pub backend: String,
 }
 
-/// System locale configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn default_firewall_backend() -> String {
+    "nftables".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocaleConfig {
+    #[serde(default = "default_lang")]
     pub lang: String,
+    #[serde(default = "default_keyboard")]
     pub keyboard_layout: String,
 }
 
-/// User configuration
+fn default_lang() -> String {
+    "en_US.UTF-8".to_string()
+}
+
+fn default_keyboard() -> String {
+    "us".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
     pub password_hash: String,
+    #[serde(default)]
     pub authorized_keys: Vec<String>,
 }
 
-/// Network configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NetworkConfig {
+    #[serde(default = "default_interface")]
     pub interface: String,
+    #[serde(default = "default_dhcp")]
     pub dhcp: bool,
     pub static_ip: Option<String>,
     pub gateway: Option<String>,
-    pub dns: Option<Vec<String>>,
+    #[serde(default)]
+    pub dns: Vec<String>,
 }
 
-/// Package configuration with support for "latest" version resolution
+fn default_interface() -> String {
+    "eth0".to_string()
+}
+
+fn default_dhcp() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncludesConfig {
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageConfig {
     pub name: String,
-    
-    /// Version specification - can be "latest", specific version, or git ref
-    pub version: VersionSpec,
-    
-    /// Optional prebuilt binary URL with template variables
+    pub version: String,
     pub prebuilt: Option<String>,
-    
-    /// Whether to fall back to source build if prebuilt fails
     #[serde(default)]
     pub fallback_to_source: bool,
-    
-    /// Source repository URL (git, tarball, etc.)
     pub source: Option<String>,
-    
-    /// Expected hash for verification (optional)
-    pub hash: Option<String>,
-    
-    /// Build system type
-    pub build_system: Option<BuildSystem>,
-    
-    /// Build flags to pass to the build system
+    #[serde(default)]
+    pub patches: Vec<String>,
+    pub pre_build_script: Option<String>,
+    pub post_build_script: Option<String>,
+    pub build_system: Option<String>,
     #[serde(default)]
     pub build_flags: Vec<String>,
-    
-    /// Dependencies that must be built first
-    #[serde(default)]
-    pub dependencies: Vec<String>,
-    
-    /// Patches to apply before building
-    #[serde(default)]
-    pub patches: Vec<PathBuf>,
-    
-    /// Pre-build script to run
-    pub pre_build_script: Option<PathBuf>,
-    
-    /// Post-build script to run
-    pub post_build_script: Option<PathBuf>,
-    
-    /// SELinux context file for this package
-    pub context_file: Option<PathBuf>,
-    
-    /// Environment variables for the build
+    pub context_file: Option<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
-    
-    /// Runtime directories to create
     #[serde(default)]
     pub runtime_dirs: Vec<String>,
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
-/// Version specification that supports "latest" git tag resolution
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum VersionSpec {
-    /// Literal version string (e.g., "1.2.3")
-    Exact(String),
-    
-    /// Special "latest" keyword for git tag resolution
-    Latest,
-    
-    /// Git-specific version specification
-    Git {
-        /// Git reference (branch, tag, commit)
-        #[serde(rename = "ref")]
-        git_ref: String,
-    },
-}
-
-impl VersionSpec {
-    pub fn is_latest(&self) -> bool {
-        matches!(self, VersionSpec::Latest) || 
-        (matches!(self, VersionSpec::Exact(v)) if v == "latest")
-    }
-    
-    pub fn as_string(&self) -> String {
-        match self {
-            VersionSpec::Exact(v) => v.clone(),
-            VersionSpec::Latest => "latest".to_string(),
-            VersionSpec::Git { git_ref } => git_ref.clone(),
-        }
-    }
-}
-
-/// Supported build systems
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildSystem {
-    Make,
-    Configure,  // autotools
-    Cmake,
-    Meson,
-    Cargo,      // Rust
-    Npm,        // Node.js
-    Python,     // setup.py/pip
-    Custom,     // Uses custom build script
-}
-
-/// Configuration file template
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigFileTemplate {
-    pub path: PathBuf,
-    pub source: PathBuf,
+pub struct ConfigFile {
+    pub path: String,
+    pub source: String,
     pub owner: String,
     pub group: String,
-    pub mode: String,  // Octal mode as string (e.g., "0644")
+    pub mode: String,
     #[serde(default)]
-    pub variables: HashMap<String, serde_json::Value>,
+    pub variables: HashMap<String, toml::Value>,
 }
 
-/// Dinit service definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DinitService {
     pub name: String,
-    /// "scripted" or "process"
     #[serde(rename = "type")]
     pub service_type: String,
     pub command: String,
     #[serde(default)]
     pub depends: Vec<String>,
-    pub working_directory: Option<PathBuf>,
-    pub log_file: Option<PathBuf>,
-    #[serde(default)]
-    pub restart: bool,
     pub start_timeout: Option<u32>,
+    pub working_directory: Option<String>,
+    pub log_file: Option<String>,
+    pub restart: Option<String>,
 }
 
-/// Log rotation configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogRotationConfig {
+pub struct LogRotation {
     pub path: String,
     pub max_size_mb: u64,
     pub max_files: u32,
@@ -261,247 +170,387 @@ pub struct LogRotationConfig {
     pub rotate_interval_days: Option<u32>,
 }
 
-/// Include configuration for modular config files
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncludesConfig {
-    pub paths: Vec<PathBuf>,
-}
-
 impl NexisConfig {
-    /// Load configuration from a file with include support
-    pub fn load<P: AsRef<Path>>(config_path: P) -> Result<Self> {
-        let config_path = config_path.as_ref();
-        let config_dir = config_path.parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        
-        let content = std::fs::read_to_string(config_path)
-            .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
-        
+    /// Load configuration from the default path
+    pub fn load() -> Result<Self, NexisError> {
+        Self::load_from("/etc/nexis/config.toml")
+    }
+
+    /// Load configuration from a specific path
+    pub fn load_from<P: AsRef<Path>>(path: P) -> Result<Self, NexisError> {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| NexisError::Io {
+                path: path.as_ref().to_path_buf(),
+                source: e,
+            })?;
+
         let mut config: NexisConfig = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse TOML config: {:?}", config_path))?;
-        
-        config.config_dir = config_dir;
-        
+            .map_err(|e| NexisError::Config(format!("Failed to parse TOML: {}", e)))?;
+
         // Process includes
-        if let Some(includes) = &config.includes {
-            config = config.process_includes(includes)?;
-        }
-        
-        // Validate configuration
-        config.validate()?;
-        
+        config.process_includes(path.as_ref().parent())?;
+
         Ok(config)
     }
-    
-    /// Process include files and merge configurations
-    fn process_includes(mut self, includes: &IncludesConfig) -> Result<Self> {
-        for include_path in &includes.paths {
-            let full_path = if include_path.is_absolute() {
-                include_path.clone()
+
+    /// Process included configuration files
+    fn process_includes(&mut self, base_dir: Option<&Path>) -> Result<(), NexisError> {
+        let base_dir = base_dir.unwrap_or_else(|| Path::new("/etc/nexis"));
+
+        for include_path in &self.includes.paths {
+            let full_path = if Path::new(include_path).is_absolute() {
+                PathBuf::from(include_path)
             } else {
-                self.config_dir.join(include_path)
+                base_dir.join(include_path)
             };
-            
+
             if !full_path.exists() {
-                return Err(ConfigError::InvalidInclude { 
-                    path: full_path 
-                }.into());
+                eprintln!("Warning: Include file not found: {}", full_path.display());
+                continue;
             }
-            
-            let include_content = std::fs::read_to_string(&full_path)
-                .with_context(|| format!("Failed to read include file: {:?}", full_path))?;
-            
-            let include_config: PartialConfig = toml::from_str(&include_content)
-                .with_context(|| format!("Failed to parse include file: {:?}", full_path))?;
-            
-            // Merge the included configuration
-            self = self.merge(include_config)?;
+
+            let included = Self::load_from(&full_path)?;
+            self.merge_config(included)?;
         }
-        
-        Ok(self)
-    }
-    
-    /// Merge a partial configuration into this one
-    fn merge(mut self, partial: PartialConfig) -> Result<Self> {
-        // Merge packages
-        if let Some(packages) = partial.packages {
-            self.packages.extend(packages);
-        }
-        
-        // Merge config files
-        if let Some(config_files) = partial.config_files {
-            self.config_files.extend(config_files);
-        }
-        
-        // Merge dinit services
-        if let Some(dinit_services) = partial.dinit_services {
-            self.dinit_services.extend(dinit_services);
-        }
-        
-        // Merge log rotation configs
-        if let Some(log_rotation) = partial.log_rotation {
-            self.log_rotation.extend(log_rotation);
-        }
-        
-        Ok(self)
-    }
-    
-    /// Validate the configuration
-    pub fn validate(&self) -> Result<()> {
-        // Validate storage backend
-        match self.system.storage_backend.as_str() {
-            "ext4" | "xfs" => {},
-            backend => {
-                return Err(ConfigError::Validation {
-                    msg: format!("Invalid storage backend: {}. Must be 'ext4' or 'xfs'", backend)
-                }.into());
-            }
-        }
-        
-        // Validate SELinux mode if enabled
-        if let Some(selinux) = &self.system.selinux {
-            if selinux.enabled {
-                match selinux.mode.as_str() {
-                    "enforcing" | "permissive" | "disabled" => {},
-                    mode => {
-                        return Err(ConfigError::Validation {
-                            msg: format!("Invalid SELinux mode: {}. Must be 'enforcing', 'permissive', or 'disabled'", mode)
-                        }.into());
-                    }
-                }
-            }
-        }
-        
-        // Validate firewall backend
-        if let Some(firewall) = &self.system.firewall {
-            match firewall.backend.as_str() {
-                "nftables" | "iptables" | "firewalld" => {},
-                backend => {
-                    return Err(ConfigError::Validation {
-                        msg: format!("Invalid firewall backend: {}. Must be 'nftables', 'iptables', or 'firewalld'", backend)
-                    }.into());
-                }
-            }
-        }
-        
-        // Validate package configurations
-        for package in &self.packages {
-            if package.name.is_empty() {
-                return Err(ConfigError::Validation {
-                    msg: "Package name cannot be empty".to_string()
-                }.into());
-            }
-            
-            // If fallback_to_source is true, source must be provided
-            if package.fallback_to_source && package.source.is_none() {
-                return Err(ConfigError::Validation {
-                    msg: format!("Package '{}' has fallback_to_source enabled but no source specified", package.name)
-                }.into());
-            }
-        }
-        
-        // Validate dinit services
-        for (name, service) in &self.dinit_services {
-            if service.name != *name {
-                return Err(ConfigError::Validation {
-                    msg: format!("Service name mismatch: key '{}' vs service.name '{}'", name, service.name)
-                }.into());
-            }
-            
-            match service.service_type.as_str() {
-                "scripted" | "process" => {},
-                stype => {
-                    return Err(ConfigError::Validation {
-                        msg: format!("Invalid service type '{}' for service '{}'. Must be 'scripted' or 'process'", stype, name)
-                    }.into());
-                }
-            }
-        }
-        
+
         Ok(())
     }
-    
-    /// Get packages that need "latest" version resolution
-    pub fn packages_needing_resolution(&self) -> Vec<&PackageConfig> {
-        self.packages
-            .iter()
-            .filter(|pkg| pkg.version.is_latest())
-            .collect()
+
+    /// Merge another configuration into this one
+    fn merge_config(&mut self, other: NexisConfig) -> Result<(), NexisError> {
+        // Merge packages
+        self.packages.extend(other.packages);
+
+        // Merge config files
+        for (name, config_file) in other.config_files {
+            if self.config_files.contains_key(&name) {
+                eprintln!("Warning: Overriding config file definition: {}", name);
+            }
+            self.config_files.insert(name, config_file);
+        }
+
+        // Merge dinit services
+        for (name, service) in other.dinit_services {
+            if self.dinit_services.contains_key(&name) {
+                eprintln!("Warning: Overriding dinit service definition: {}", name);
+            }
+            self.dinit_services.insert(name, service);
+        }
+
+        // Merge log rotation configs
+        self.log_rotation.extend(other.log_rotation);
+
+        Ok(())
     }
-    
-    /// Find a package configuration by name
-    pub fn find_package(&self, name: &str) -> Option<&PackageConfig> {
+
+    /// Validate the configuration
+    pub fn validate(&self) -> Result<(), NexisError> {
+        // Validate hostname
+        if self.system.hostname.is_empty() {
+            return Err(NexisError::Config("Hostname cannot be empty".to_string()));
+        }
+
+        // Validate kernel version format
+        if !self.system.kernel.starts_with("linux-") {
+            return Err(NexisError::Config(
+                "Kernel version must start with 'linux-'".to_string()
+            ));
+        }
+
+        // Validate SELinux mode
+        match self.system.selinux.mode.as_str() {
+            "enforcing" | "permissive" | "disabled" => {},
+            _ => return Err(NexisError::Config(
+                "SELinux mode must be 'enforcing', 'permissive', or 'disabled'".to_string()
+            )),
+        }
+
+        // Validate firewall backend
+        match self.system.firewall.backend.as_str() {
+            "nftables" | "iptables" | "firewalld" => {},
+            _ => return Err(NexisError::Config(
+                "Firewall backend must be 'nftables', 'iptables', or 'firewalld'".to_string()
+            )),
+        }
+
+        // Validate package configurations
+        for pkg in &self.packages {
+            if pkg.name.is_empty() {
+                return Err(NexisError::Config("Package name cannot be empty".to_string()));
+            }
+
+            if pkg.prebuilt.is_none() && pkg.source.is_none() {
+                return Err(NexisError::Config(
+                    format!("Package '{}' must have either prebuilt or source URL", pkg.name)
+                ));
+            }
+        }
+
+        // Validate dinit services
+        for (name, service) in &self.dinit_services {
+            match service.service_type.as_str() {
+                "process" | "scripted" | "internal" => {},
+                _ => return Err(NexisError::Config(
+                    format!("Invalid dinit service type '{}' for service '{}'", 
+                           service.service_type, name)
+                )),
+            }
+        }
+
+        // Validate config file permissions
+        for (name, config_file) in &self.config_files {
+            if !config_file.mode.starts_with('0') || config_file.mode.len() != 4 {
+                return Err(NexisError::Config(
+                    format!("Invalid file mode '{}' for config file '{}'", 
+                           config_file.mode, name)
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get package by name
+    pub fn get_package(&self, name: &str) -> Option<&PackageConfig> {
         self.packages.iter().find(|pkg| pkg.name == name)
     }
+
+    /// Get all packages with dependencies resolved in topological order
+    pub fn get_packages_ordered(&self) -> Result<Vec<&PackageConfig>, NexisError> {
+        use std::collections::{HashSet, VecDeque};
+
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut visiting = HashSet::new();
+
+        fn visit<'a>(
+            pkg_name: &str,
+            packages: &'a [PackageConfig],
+            visited: &mut HashSet<String>,
+            visiting: &mut HashSet<String>,
+            result: &mut Vec<&'a PackageConfig>,
+        ) -> Result<(), NexisError> {
+            if visited.contains(pkg_name) {
+                return Ok(());
+            }
+
+            if visiting.contains(pkg_name) {
+                return Err(NexisError::Config(
+                    format!("Circular dependency detected involving package '{}'", pkg_name)
+                ));
+            }
+
+            let pkg = packages.iter().find(|p| p.name == pkg_name)
+                .ok_or_else(|| NexisError::Config(
+                    format!("Package '{}' not found", pkg_name)
+                ))?;
+
+            visiting.insert(pkg_name.to_string());
+
+            for dep in &pkg.dependencies {
+                visit(dep, packages, visited, visiting, result)?;
+            }
+
+            visiting.remove(pkg_name);
+            visited.insert(pkg_name.to_string());
+            result.push(pkg);
+
+            Ok(())
+        }
+
+        for pkg in &self.packages {
+            visit(&pkg.name, &self.packages, &mut visited, &mut visiting, &mut result)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Expand environment variables in a string
+    pub fn expand_vars(&self, input: &str) -> String {
+        let mut result = input.to_string();
+        
+        // Replace system variables
+        result = result.replace("{hostname}", &self.system.hostname);
+        result = result.replace("{version}", &self.system.version);
+        result = result.replace("{kernel}", &self.system.kernel);
+        
+        // Replace XDG variables (basic implementation)
+        if let Ok(user) = std::env::var("USER") {
+            result = result.replace("$XDG_RUNTIME_DIR", &format!("/run/user/{}", 
+                get_user_id(&user).unwrap_or(1000)));
+        }
+        
+        result
+    }
 }
 
-/// Partial configuration structure for includes
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PartialConfig {
-    pub packages: Option<Vec<PackageConfig>>,
-    pub config_files: Option<HashMap<String, ConfigFileTemplate>>,
-    pub dinit_services: Option<HashMap<String, DinitService>>,
-    pub log_rotation: Option<Vec<LogRotationConfig>>,
+impl Default for NexisConfig {
+    fn default() -> Self {
+        Self {
+            system: SystemConfig {
+                hostname: "nexis".to_string(),
+                timezone: "UTC".to_string(),
+                version: "0.1.0".to_string(),
+                kernel: "linux-6.9.2".to_string(),
+                kernel_source: "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.2.tar.xz".to_string(),
+                kernel_config: "configs/kernel-default.config".to_string(),
+                selinux: SelinuxConfig::default(),
+                firewall: FirewallConfig::default(),
+                locale: LocaleConfig::default(),
+            },
+            users: HashMap::new(),
+            network: NetworkConfig::default(),
+            includes: IncludesConfig::default(),
+            packages: Vec::new(),
+            config_files: HashMap::new(),
+            dinit_services: HashMap::new(),
+            log_rotation: Vec::new(),
+        }
+    }
 }
 
-// Default value functions
-fn default_storage_backend() -> String {
-    "ext4".to_string()
-}
-
-fn default_store_path() -> PathBuf {
-    PathBuf::from("/store")
-}
-
-fn default_grub_config() -> PathBuf {
-    PathBuf::from("/boot/grub/grub.cfg")
+/// Helper function to get user ID (simplified)
+fn get_user_id(username: &str) -> Option<u32> {
+    // In a real implementation, this would query /etc/passwd or use libc
+    // For now, return a default UID for non-root users
+    match username {
+        "root" => Some(0),
+        _ => Some(1000),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
     #[test]
-    fn test_version_spec_latest() {
-        let latest_str = VersionSpec::Exact("latest".to_string());
-        let latest_enum = VersionSpec::Latest;
-        let specific = VersionSpec::Exact("1.2.3".to_string());
-        
-        assert!(latest_str.is_latest());
-        assert!(latest_enum.is_latest());
-        assert!(!specific.is_latest());
-    }
-    
-    #[test]
-    fn test_basic_config_parsing() {
+    fn test_config_parsing() {
         let toml_content = r#"
 [system]
 hostname = "test-host"
-timezone = "UTC"
-version = "0.1.0"
-kernel = "linux-6.9.2"
-kernel_source = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.2.tar.xz"
-kernel_config = "configs/kernel-default.config"
+timezone = "America/New_York"
+version = "0.2.0"
+kernel = "linux-6.10.1"
+kernel_source = "https://example.com/kernel.tar.xz"
+kernel_config = "test-config"
+
+[system.selinux]
+enabled = true
+mode = "enforcing"
 
 [users.root]
-password_hash = "$argon2id$v=19$m=65536,t=3,p=4$SOME_BASE64_SALT$SOME_BASE64_HASH"
-authorized_keys = []
-
-[network]
-interface = "eth0"
-dhcp = true
+password_hash = "$argon2id$test"
+authorized_keys = ["ssh-ed25519 AAAA... test@example.com"]
 
 [[packages]]
 name = "vim"
 version = "latest"
 source = "https://github.com/vim/vim.git"
-build_system = "make"
-        "#;
-        
+dependencies = ["ncurses"]
+
+[[packages]]
+name = "ncurses"
+version = "6.4"
+prebuilt = "https://example.com/ncurses.tar.gz"
+"#;
+
         let config: NexisConfig = toml::from_str(toml_content).unwrap();
+        
         assert_eq!(config.system.hostname, "test-host");
-        assert_eq!(config.packages.len(), 1);
-        assert!(config.packages[0].version.is_latest());
+        assert_eq!(config.system.timezone, "America/New_York");
+        assert!(config.system.selinux.enabled);
+        assert_eq!(config.system.selinux.mode, "enforcing");
+        
+        assert_eq!(config.packages.len(), 2);
+        assert_eq!(config.packages[0].name, "vim");
+        assert_eq!(config.packages[1].name, "ncurses");
+        
+        assert!(config.users.contains_key("root"));
+    }
+
+    #[test]
+    fn test_config_validation() {
+        let mut config = NexisConfig::default();
+        
+        // Valid config should pass
+        assert!(config.validate().is_ok());
+        
+        // Empty hostname should fail
+        config.system.hostname.clear();
+        assert!(config.validate().is_err());
+        
+        // Reset and test invalid SELinux mode
+        config = NexisConfig::default();
+        config.system.selinux.mode = "invalid".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_dependency_ordering() {
+        let mut config = NexisConfig::default();
+        
+        config.packages = vec![
+            PackageConfig {
+                name: "app".to_string(),
+                version: "1.0".to_string(),
+                dependencies: vec!["libB".to_string(), "libA".to_string()],
+                prebuilt: Some("https://example.com/app.tar.gz".to_string()),
+                ..Default::default()
+            },
+            PackageConfig {
+                name: "libB".to_string(),
+                version: "1.0".to_string(),
+                dependencies: vec!["libA".to_string()],
+                prebuilt: Some("https://example.com/libB.tar.gz".to_string()),
+                ..Default::default()
+            },
+            PackageConfig {
+                name: "libA".to_string(),
+                version: "1.0".to_string(),
+                dependencies: vec![],
+                prebuilt: Some("https://example.com/libA.tar.gz".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let ordered = config.get_packages_ordered().unwrap();
+        assert_eq!(ordered[0].name, "libA");
+        assert_eq!(ordered[1].name, "libB");
+        assert_eq!(ordered[2].name, "app");
+    }
+
+    #[test]
+    fn test_var_expansion() {
+        let config = NexisConfig::default();
+        
+        let input = "Welcome to {hostname} running version {version}";
+        let expanded = config.expand_vars(input);
+        
+        assert!(expanded.contains("nexis"));
+        assert!(expanded.contains("0.1.0"));
+    }
+}
+
+impl Default for PackageConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: String::new(),
+            prebuilt: None,
+            fallback_to_source: false,
+            source: None,
+            patches: Vec::new(),
+            pre_build_script: None,
+            post_build_script: None,
+            build_system: None,
+            build_flags: Vec::new(),
+            context_file: None,
+            env: HashMap::new(),
+            runtime_dirs: Vec::new(),
+            hash: None,
+            dependencies: Vec::new(),
+        }
     }
 }
