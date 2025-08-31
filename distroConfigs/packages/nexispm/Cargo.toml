@@ -3,7 +3,7 @@ name = "nexispm"
 version = "0.1.0"
 edition = "2021"
 authors = ["Kyle Gortych <kyle.gortych.dev@gmail.com>"]
-description = "Declarative system package manager for NexisOS with optimized store operations and generation rollbacks"
+description = "Declarative system package manager for NexisOS with optimized store operations, refcounting, and generation rollbacks"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/NexisOS/NexisOS"
 homepage = "https://github.com/NexisOS/NexisOS"
@@ -28,8 +28,8 @@ toml = "0.8"
 config = "0.14"
 
 # Storage backends
-sled = { version = "0.34", optional = true }
-rocksdb = { version = "0.22", features = ["multi-threaded-cf"], optional = true }
+lmdb = { version = "0.10", features = ["sync"], optional = true }   # for desktop/gaming store
+rocksdb = { version = "0.22", features = ["multi-threaded-cf"], optional = true }  # server backend
 
 # Async runtime and HTTP client
 tokio = { version = "1.0", features = ["full"] }
@@ -37,8 +37,8 @@ reqwest = { version = "0.12", features = ["stream", "rustls-tls"] }
 futures = "0.3"
 
 # Hashing and cryptography
-sha2 = "0.10"
 blake3 = "0.3"
+sha2 = "0.10"
 ring = "0.17"
 
 # Compression support
@@ -83,11 +83,11 @@ predicates = "3.1"
 tokio-test = "0.4"
 
 [features]
-default = ["ext4-backend", "grub-integration"]
+default = ["lmdb-backend", "grub-integration"]
 
 # Storage backend features
-ext4-backend = ["sled"]
-xfs-backend = ["rocksdb"]
+lmdb-backend = ["lmdb"]       # Desktop/gaming
+rocksdb-backend = ["rocksdb"] # Server
 
 # System integration features
 grub-integration = []

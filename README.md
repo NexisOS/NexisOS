@@ -17,79 +17,10 @@ You can try the latest ISO build of NexisOS by downloading it from SourceForge:
 ## 📁 Possible Directory Layout
 
 <details>
-<summary>Click to see possible directory structure</summary>
+<summary>Click to see directory structure</summary>
 
 ```text
-NexisOS/
-├── ISODependencies/                   # All custom code, tools, and scripts
-│   ├── configs/                       # Defconfig files to build NexisOS minimal installer ISO
-│   │   ├── NexisOS_x86_64_defconfig
-│   │   ├── NexisOS_aarch64_defconfig
-│   │   └── NexisOS_riscv64_defconfig
-│   │
-│   ├── kernel-configs/                # Linux kernel config files per architecture
-│   │   ├── linux-x86_64.config
-│   │   ├── linux-aarch64.config
-│   │   └── linux-riscv64.config
-│   │
-│   ├── nexis-pkg-mgr/                 # Rust source for NexisOS package manager
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs                 # Core library entry (re-exports store, meta, gc, gen, etc.)
-│   │       ├── main.rs                # CLI + command dispatch (thin layer using the lib)
-│   │       ├── config.rs              # parse /etc/nexis/config.toml
-│   │       ├── store/
-│   │       │   ├── mod.rs             # public store API
-│   │       │   ├── ingest.rs          # ingest-time dedup logic
-│   │       │   ├── backend.rs         # FS abstractions (reflink/hardlink)
-│   │       │   └── layout.rs          # path hashing and layout helpers
-│   │       ├── meta/
-│   │       │   ├── mod.rs             # MetaStore trait + backend selection
-│   │       │   ├── sled_store.rs      # sled implementation for ext4
-│   │       │   └── rocksdb_store.rs   # RocksDB implementation for XFS
-│   │       ├── gc/
-│   │       │   ├── mod.rs             # GC controller (mark + staged delete)
-│   │       │   └── worker.rs          # background deletion workers
-│   │       ├── gen/
-│   │       │   ├── mod.rs             # generation creation + activation
-│   │       │   └── grub.rs            # grub menu entry generation
-│   │       └── util.rs                # small utilities (hashing, errors, io)
-│   │
-│   ├── package/                       # Buildroot package definition for nexis-pkg
-│   │   ├── Config.in
-│   │   └── nexis-pkg/
-│   │       ├── Config.in
-│   │       └── nexis-pkg.mk           # Build instructions to compile Rust package manager
-│   │
-│   ├── overlay/                       # Root filesystem overlay for Buildroot
-│   │   ├── etc/
-│   │   │   ├── motd                   # Message of the day
-│   │   │   └── skel/
-│   │   │       └── .config/
-│   │   │           └── autostart/
-│   │   │               └── nexis-welcome.desktop
-│   │   │
-│   │   └── root/
-│   │       ├── scripts/               # Runtime scripts, installer, post-install hooks
-│   │       │   ├── install.sh
-│   │       │   └── post-install.sh
-│   │       └── nexis-pkg/             # Runtime config, data for package manager (no source)
-│   │           └── config.toml
-│   │
-│   └── scripts/                       # Helper/build scripts for project (optional)
-│       ├── build_nexis_pkg.sh         # Optional: compile package manager manually
-│       ├── install.sh
-│       └── post-install.sh
-│
-├── buildroot/                         # Buildroot submodule (Builds installer ISO)
-├── buildroot_backup_imgs/             # Backups of Buildroot output images
-├── Makefile                           # Main build orchestrator for NexisOS ISO
-├── README.md
-├── LICENSE
-├── VERSION
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-└── SECURITY.md
+
 ```
 
 </details>
@@ -333,19 +264,24 @@ allow user_t immutable_dir_t:file { getattr open read };
 ```text
 Core Goals:
 
-- Desktop/Gaming (ext4 + sled)
-  - Root/Home: ext4
-  - Store: ext4 with ingest-time dedup (hard-links)
-  - GC: refcount + staged deletes
-  - Metadata DB: sled
+- **Desktop / Gaming (ext4 + LMDB)**
+  - Root/Home: ext4  
+  - Store: ext4 with ingest-time dedup (hardlinks)  
+  - Hashing: BLAKE3 (fast parallel checksums)  
+  - GC: refcount + staged deletes (Bloom filters accelerate reachability checks)  
+  - Metadata DB: LMDB with WAL (fast, crash-consistent, low latency)  
 
-- Server (XFS + RocksDB)
-  - Format XFS with reflink=1
-  - Store: XFS with reflink-on-ingest
-  - GC: staged deletes
-  - Metadata DB: RocksDB
+- **Server (XFS + RocksDB)**
+  - Filesystem: XFS with reflink=1 enabled  
+  - Store: XFS with reflink-on-ingest (cheap deduplication)  
+  - Hashing: BLAKE3  
+  - GC: staged deletes with Bloom filter acceleration (parallel workers)  
+  - Metadata DB: RocksDB with WAL (handles large-scale, high-concurrency workloads)  
 
-- Backups: handled externally (rsync)
+- **Common**
+  - WAL ensures crash consistency  
+  - Refcounting provides precise garbage collection  
+  - Backup of user home files handled externally (rsync/snapshots) — no need to back up entire OS image  
 ```
 
 </details>
@@ -355,24 +291,14 @@ Core Goals:
 <details>
 <summary>Click to see example tree</summary>
 
+The store uses a **bucketed hashed directory layout** for fast lookups, deletions, and garbage collection.
+
 ```text
 /store/
 └── ab/
     └── cd/
         ├── abcd1234-vim/
         └── abcd5678-libpng/
-```
-
-```text
-Sharding depth:
-- ext4 + sled: 2–3 levels
-- XFS + RocksDB: 1–2 levels
-
-Benefits:
-- Faster filesystem operations (lookup, unlink, GC)
-- Parallel deletion of subtrees
-- DB tracks hash → path + refcounts
-- Optional compression (tar.zst)
 ```
 
 </details>

@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # Root workspace Cargo dependencies
+  # Package manager (nexispm) Rust dependencies
   - package-ecosystem: "cargo"
-    directory: "/"
+    directory: "/distroConfigs/packages/nexispm"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -12,9 +12,10 @@ updates:
       - "kylegortych"
     labels:
       - "dependencies"
+      - "nexispm"
       - "rust"
     commit-message:
-      prefix: "deps"
+      prefix: "deps(nexispm)"
       include: "scope"
     groups:
       # Group minor and patch updates together
@@ -27,21 +28,3 @@ updates:
       dev-dependencies:
         applies-to: version-updates
         dependency-type: "development"
-
-  # Package manager specific dependencies
-  - package-ecosystem: "cargo"
-    directory: "/distroConfigs/packages/nexispm"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "04:00"
-    open-pull-requests-limit: 5
-    reviewers:
-      - "kylegortych"
-    labels:
-      - "dependencies"
-      - "nexispm"
-      - "rust"
-    commit-message:
-      prefix: "deps(nexispm)"
-      include: "scope"
