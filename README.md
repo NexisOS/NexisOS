@@ -14,17 +14,6 @@ You can try the latest ISO build of NexisOS by downloading it from SourceForge:
 
 ---
 
-## 📁 Possible Directory Layout
-
-<details>
-<summary>Click to see directory structure</summary>
-
-```text
-
-```
-
-</details>
-
 ## 🔧 Building From Source Prerequisites
 
 <details>
