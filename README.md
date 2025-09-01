@@ -258,7 +258,7 @@ Core Goals:
   - Store: ext4 with ingest-time dedup (hardlinks)  
   - Hashing: BLAKE3 (fast parallel checksums)  
   - GC: refcount + staged deletes (Bloom filters accelerate reachability checks)  
-  - Metadata DB: LMDB with WAL (fast, crash-consistent, low latency)  
+  - Metadata DB: LMDB with ACID transactions via memory-mapped files (no WAL needed)
 
 - **Server (XFS + RocksDB)**
   - Filesystem: XFS with reflink=1 enabled  
@@ -268,9 +268,9 @@ Core Goals:
   - Metadata DB: RocksDB with WAL (handles large-scale, high-concurrency workloads)  
 
 - **Common**
-  - WAL ensures crash consistency  
+  - ACID transactions ensure data consistency
   - Refcounting provides precise garbage collection  
-  - Backup of user home files handled externally (rsync/snapshots) — no need to back up entire OS image  
+  - Backup of user home files handled externally (rsync/snapshots) – no need to back up entire OS image  
 ```
 
 </details>
@@ -300,40 +300,70 @@ The store uses a **bucketed hashed directory layout** for fast lookups, deletion
 
 ```text
 Deduplication:
-- Hash files on write
+- Hash files on write using BLAKE3
 - Reflink (XFS) / Hardlink (ext4)
-- No global sweep
+- No global sweep needed
 
 Garbage Collection:
-- DB tracks refcounts
+- Database tracks refcounts for all store paths
 - Steps:
-  1. Mark live roots
+  1. Mark live roots (current generation, pinned generations)
   2. Decrement refcounts for unreachable paths
   3. Move zero-refcount paths to /store/.trash/
   4. Background worker deletes contents in parallel
-- Optimizations: hashed subdirs, parallel workers, optional io_uring batching
+- Optimizations: bucketed hashed subdirs, parallel workers, optional io_uring batching
+- Bloom filters accelerate reachability checks during large GC operations
 ```
 
 </details>
 
-## ⚙️Rollbacks
+## ⚙️Rollbacks & Generation Management
 
 <details>
 <summary>Click to see features</summary>
 
 ```text
-Nixos like features:
-- Rollback via profiles
+NixOS-like features:
+- System generations stored as profiles
+- Each generation is a complete system specification
 - GRUB menu entries auto-generated for available generations
+- Atomic upgrades and rollbacks via symlink switching
 
 Performance Highlights:
 - **Store/Garbage Collection Cleanup:**
   - NixOS: sequential scan of /nix/store, O(N) with total store size
-  - NexisOS: DB-backed refcount tracking + bucketed hashed store
+  - NexisOS: Database-backed refcount tracking + bucketed hashed store
     - Cleanup only touches unreferenced items
     - Parallel deletion of hashed subdirs
     - Optional io_uring batching for faster disk operations
+    - Bloom filters reduce false positive reachability checks
   - **Estimated speedup:** 5–20× faster for large stores (1,000+ packages), depending on filesystem and hardware
+
+- **Database Performance by Profile:**
+  - **Desktop**: LMDB memory-mapped files provide zero-copy reads, optimal for frequent metadata queries
+  - **Server**: RocksDB handles high-concurrency workloads and large datasets with WAL-based durability
+```
+
+</details>
+
+## 📦 Package Manager Architecture
+
+<details>
+<summary>Click to see technical details</summary>
+
+```text
+Storage Backends:
+- LMDB: Memory-mapped, zero-copy reads, ACID via copy-on-write
+- RocksDB: LSM-tree based, high write throughput, WAL-based consistency
+
+Key Features:
+- Declarative configuration via TOML (no custom DSL)
+- Content-addressable store with BLAKE3 hashing  
+- Atomic transactions for all operations
+- Parallel builds and downloads
+- SELinux integration with automatic context management
+- Template-based configuration file generation
+- Service management via dinit integration
 ```
 
 </details>
