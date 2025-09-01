@@ -1,4 +1,6 @@
 version: 2
+updates: []
+
 # updates:
 #   # Package manager (nexispm) Rust dependencies
 #   - package-ecosystem: "cargo"
