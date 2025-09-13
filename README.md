@@ -101,9 +101,13 @@ kernel = "linux-6.9.2"
 kernel_source = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.2.tar.xz"
 kernel_config = "configs/kernel-default.config"
 
+[users.myuser]
+password_hash = "$argon2id$v=19$m=65536,t=3,p=4$..."
+shell = "/bin/bash"
+home = "/home/myuser"
+
 [system.selinux]
-enabled = true
-mode = "enforcing"    # can be "permissive" or "disabled" for testing
+new settings = ?
 
 [system.firewall]
 # Choose one firewall backend: "nftables", "iptables", or "firewalld"
@@ -199,6 +203,17 @@ working_directory = "/"
 log_file = "/var/log/sshd.log"
 restart = "true"
 
+[nexis.dinit]  # Native dinit service support
+# User dinit services
+"my-app" = {
+    type = "process",
+    command = "/home/myuser/.local/bin/my-app",
+    depends = ["network"],
+    user = "myuser",
+    working_directory = "/home/myuser",
+    enable = true
+}
+
 [[log_rotation]]
 path = "/var/log/sshd.log"
 max_size_mb = 100
@@ -211,6 +226,33 @@ path = "/var/log/vim"
 max_size_mb = 50
 max_files = 5
 compress = true
+
+# File with custom content
+".gitconfig" = { 
+    content = '''
+[user]
+    name = "My Name"
+    email = "me@example.com"
+[core]
+    editor = vim
+''' 
+
+# Symlink
+".config/nvim" = { 
+    symlink = "/etc/nvim-config",
+    force = true  # Overwrite if exists
+}
+
+# Environment variables
+[nexis.environment]
+EDITOR = "vim"
+BROWSER = "firefox"
+PATH = "$PATH:/home/myuser/.local/bin"
+
+# Generation management
+[nexis.generations]
+keep_last = 10
+auto_cleanup = true
 ```
 
 </details>
