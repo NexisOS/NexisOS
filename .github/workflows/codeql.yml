@@ -1,0 +1,44 @@
+name: "CodeQL Advanced"
+on:
+  push:
+    tags:
+      - '*'   # Runs only for pushed tags/releases
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - language: actions
+          build-mode: none
+        - language: rust
+          build-mode: none
+        # Add or remove supported CodeQL languages here
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    # Add any setup steps before running the CodeQL action (optional)
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: ${{ matrix.build-mode }}
+        # queries: security-extended,security-and-quality
+    # Add custom build steps if you use manual build mode (optional)
+    - if: matrix.build-mode == 'manual'
+      shell: bash
+      run: |
+        echo 'Replace this with the commands to build your code for manual builds.'
+        exit 1
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:${{matrix.language}}"
