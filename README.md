@@ -295,19 +295,19 @@ allow user_t immutable_dir_t:file { getattr open read };
 ```text
 Core Goals:
 
-- **Desktop / Gaming (ext4 + LMDB)**
-  - Root/Home: ext4  
-  - Store: ext4 with ingest-time dedup (hardlinks)  
-  - Hashing: BLAKE3 (fast parallel checksums)  
-  - GC: refcount + staged deletes (Bloom filters accelerate reachability checks)  
-  - Metadata DB: LMDB with ACID transactions via memory-mapped files (no WAL needed)
-
-- **Server (XFS + RocksDB)**
-  - Filesystem: XFS with reflink=1 enabled  
+- **Desktop & Server (XFS + RocksDB)**
+  - Filesystem: XFS with reflink=1 enabled for both desktop and server users  
   - Store: XFS with reflink-on-ingest (cheap deduplication)  
-  - Hashing: BLAKE3  
+  - Hashing: BLAKE3 (fast parallel checksums)  
   - GC: staged deletes with Bloom filter acceleration (parallel workers)  
   - Metadata DB: RocksDB with WAL (handles large-scale, high-concurrency workloads)  
+
+- **Desktop Only**
+  - Uses ext4 on specific directories to optimize gaming performance:
+  - /home (user home directories storing game data, saves, and configs)
+  - /opt (optional, for commercial game installations)
+  - Custom mount points for games such as /mnt/games or /data/games if configured
+  - These ext4 mounts provide mature journaling, low latency for small file operations, and excellent compatibility with game launchers.
 
 - **Common**
   - ACID transactions ensure data consistency
@@ -342,19 +342,22 @@ The store uses a **bucketed hashed directory layout** for fast lookups, deletion
 
 ```text
 Deduplication:
-- Hash files on write using BLAKE3
-- Reflink (XFS) / Hardlink (ext4)
-- No global sweep needed
+- Content is hashed with BLAKE3 on write, ensuring identical files are stored only once.
+- Filesystems with reflink support (XFS with reflink=1) enable cheap copy-on-write clones.
+- No global store-wide sweep is necessary for cleanup, avoiding expensive full scans.
 
 Garbage Collection:
-- Database tracks refcounts for all store paths
-- Steps:
-  1. Mark live roots (current generation, pinned generations)
-  2. Decrement refcounts for unreachable paths
-  3. Move zero-refcount paths to /store/.trash/
-  4. Background worker deletes contents in parallel
-- Optimizations: bucketed hashed subdirs, parallel workers, optional io_uring batching
-- Bloom filters accelerate reachability checks during large GC operations
+- A high-performance database tracks reference counts for every stored path.
+- GC workflow:
+  1. Mark live roots (active generations, pinned profiles).
+  2. Decrement refcounts of unreachable items.
+  3. Move zero-refcount entries to `/store/.trash/` for safe deletion.
+  4. Parallel background workers delete trash contents asynchronously.
+- Advanced optimizations include:
+  - Bucketed hashed directories for parallel GC without contention.
+  - Parallel workers to utilize multi-core systems effectively.
+  - Optional Linux io_uring batching to accelerate disk IO.
+  - Bloom filters to minimize false-positive checks during reachability analysis.
 ```
 
 </details>
@@ -366,46 +369,37 @@ Garbage Collection:
 
 ```text
 NixOS-like features:
-- System generations stored as profiles
-- Each generation is a complete system specification
-- GRUB menu entries auto-generated for available generations
-- Atomic upgrades and rollbacks via symlink switching
+- System generations stored as profiles.
+- Each generation is a complete system specification.
+- GRUB menu entries auto-generated for available generations.
+- Atomic upgrades and rollbacks via symlink switching.
+
+Generation Aging & Pruning:
+- Older generations can accumulate, increasing storage and metadata overhead.
+- Configurable retention policies automatically prune aged or unused generations.
+- Generations marked for deletion have their references removed, triggering garbage collection.
+- Efficient aging strategy:
+  - Keep a configurable number of recent generations (e.g., last 10).
+  - Optionally keep pinned or manually marked generations indefinitely.
+  - Automatic cleanup runs as a background task to avoid impacting performance.
+  - Parallel deletion of generation data using the bucketed hashed store structure.
+- Aging policies maintain store performance by minimizing obsolete data.
 
 Performance Highlights:
-- **Store/Garbage Collection Cleanup:**
-  - NixOS: sequential scan of /nix/store, O(N) with total store size
-  - NexisOS: Database-backed refcount tracking + bucketed hashed store
-    - Cleanup only touches unreferenced items
-    - Parallel deletion of hashed subdirs
-    - Optional io_uring batching for faster disk operations
-    - Bloom filters reduce false positive reachability checks
-  - **Estimated speedup:** 5–20× faster for large stores (1,000+ packages), depending on filesystem and hardware
+- **Store / Garbage Collection Cleanup:**
+  - NixOS relies heavily on hard links and must recursively traverse the entire store tree to find unreferenced paths.
+  - NexisOS avoids this by using a RocksDB-backed refcount database and a bucketed hashed directory structure.
+    - Only unreferenced items are touched.
+    - Parallel deletion of store entries across hashed buckets.
+    - Optional io_uring batching improves disk throughput.
+    - Bloom filters reduce unnecessary disk access during reachability analysis.
+  - Should be significantly faster and more efficient on XFS with reflink support.
 
-- **Database Performance by Profile:**
-  - **Desktop**: LMDB memory-mapped files provide zero-copy reads, optimal for frequent metadata queries
-  - **Server**: RocksDB handles high-concurrency workloads and large datasets with WAL-based durability
-```
-
-</details>
-
-## 📦 Package Manager Architecture
-
-<details>
-<summary>Click to see technical details</summary>
-
-```text
-Storage Backends:
-- LMDB: Memory-mapped, zero-copy reads, ACID via copy-on-write
-- RocksDB: LSM-tree based, high write throughput, WAL-based consistency
-
-Key Features:
-- Declarative configuration via TOML (no custom DSL)
-- Content-addressable store with BLAKE3 hashing  
-- Atomic transactions for all operations
-- Parallel builds and downloads
-- SELinux integration with automatic context management
-- Template-based configuration file generation
-- Service management via dinit integration
+- **Database Performance:**
+  - RocksDB is used exclusively for all metadata operations.
+  - WAL support ensures durability.
+  - Bloom filters accelerate lookups and GC marking.
+  - Optimized for large-scale, high-concurrency environments.
 ```
 
 </details>
