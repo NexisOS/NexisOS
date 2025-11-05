@@ -1,179 +1,136 @@
-.DEFAULT_GOAL := build
+.DEFAULT_GOAL := menu
 .ONESHELL:
 
 # === Variables ===
-
-ARCH ?= x86_64
-
-AVAILABLE_ARCHS := $(shell ls IsoDependencies/configs/NexisOS_*_defconfig | sed 's/.*NexisOS_\(.*\)_defconfig/\1/')
-
-# Validate ARCH early
-ifeq (,$(filter $(ARCH),$(AVAILABLE_ARCHS)))
-$(error Unsupported ARCH=$(ARCH). Supported: $(AVAILABLE_ARCHS))
-endif
-
-DEFCONFIG := NexisOS_$(ARCH)_defconfig
-CONFIG_FILE := $(abspath IsoDependencies/configs/$(DEFCONFIG))
-KERNEL_CONFIG := $(abspath IsoDependencies/kernel-configs/linux-$(ARCH).config)
-
-BUILDROOT_VERSION := 2025.xx.xx
-BUILDROOT_DIR := ../buildroot
-OUTPUT_DIR := output-$(ARCH)
-
-BACKUP_CONFIG := $(BUILDROOT_DIR)/package/Config.in.bak
-BUILDROOT_CONFIG := $(BUILDROOT_DIR)/package/Config.in
-
-NEXISOS_BOARD_DIR := $(BUILDROOT_DIR)/board/nexisos
-
+BUILDROOT_DIR := buildroot
+CONFIGS_DIR := distroConfigs
+OUTPUT_DIR := createdISOs
+SCRIPTS_DIR := $(CONFIGS_DIR)/scripts
 NUM_JOBS := $(shell nproc)
 
-PATCH_MARKER := "# Begin nexpm Config.in patch"
-PATCH_APPLIED := $(shell grep -Fq "$(PATCH_MARKER)" $(BUILDROOT_CONFIG) 2>/dev/null && echo yes || echo no)
+ARCHS := aarch64 x86_64 riscv64
 
-ROOTFS_OVERLAY := $(NEXISOS_BOARD_DIR)/rootfs-overlay/root
-
-# === Helper macros ===
-
+# === Helper Functions ===
 define copy_with_mkdir
 	@mkdir -p $(dir $(2))
 	@cp -r $(1) $(2)
 endef
 
-define backup_images
-	@mkdir -p buildroot_backup_imgs/$(ARCH)/output/images
-	@cp -r $(OUTPUT_DIR)/images/* buildroot_backup_imgs/$(ARCH)/output/images/
+define copy_config_and_overlay
+	@echo "📄 Copying Buildroot defconfig, kernel config, and overlay for $(1)..."
+	cp $(CONFIGS_DIR)/$(1)/NexisOS_$(1)_defconfig $(BUILDROOT_DIR)/configs/
+	if [ -f "$(CONFIGS_DIR)/$(1)/linux-$(1).config" ]; then \
+		cp $(CONFIGS_DIR)/$(1)/linux-$(1).config $(BUILDROOT_DIR)/board/nexisos/linux.config; \
+	fi
+	rm -rf $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/*
+	rsync -a --delete $(CONFIGS_DIR)/$(1)/overlay/ $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/
 endef
 
-# === Targets ===
+define copy_scripts_and_packages
+	@echo "📦 Copying runtime scripts..."
+	rm -rf $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/scripts/*
+	$(call copy_with_mkdir,$(SCRIPTS_DIR)/*.sh,$(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/scripts/)
+	chmod +x $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/scripts/*.sh
 
-.PHONY: validate-kernel-config
-validate-kernel-config:
-	if [ ! -f $(KERNEL_CONFIG) ]; then
-		echo "ERROR: Kernel config file missing for architecture '$(ARCH)': $(KERNEL_CONFIG)"
-		exit 1
-	fi
+	@echo "📦 Copying all packages..."
+	rm -rf $(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/packages/*
+	@for pkg in $(CONFIGS_DIR)/packages/*; do \
+		if [ -d "$$pkg" ]; then \
+			dest=$(BUILDROOT_DIR)/board/nexisos/rootfs-overlay/packages/$$(basename $$pkg); \
+			mkdir -p "$$dest"; \
+			rsync -a --delete "$$pkg/" "$$dest/"; \
+			echo "  ✅ Copied package $$(basename $$pkg)"; \
+		fi; \
+	done
+endef
 
-.PHONY: validate
-validate: validate-kernel-config
-	if [ ! -f $(CONFIG_FILE) ]; then
-		echo "ERROR: Architecture '$(ARCH)' defconfig missing: $(CONFIG_FILE)"
-		echo "Valid options are:"
-		$(foreach arch,$(AVAILABLE_ARCHS),echo " - $(arch)")
-		exit 1
-	fi
+# === Clean Buildroot (reset submodule) ===
+.PHONY: clean-buildroot
+clean-buildroot:
+	@echo "🧹 Cleaning Buildroot output and restoring submodule..."
+	rm -rf $(OUTPUT_DIR)/*
+	cd $(BUILDROOT_DIR) && git reset --hard && git clean -fdx
+	@echo "✅ Buildroot reset complete."
 
-.PHONY: prepare
-prepare: validate
-	@echo "Ready to configure Buildroot for $(ARCH)"
-
-.PHONY: copy-kernel-config
-copy-kernel-config: validate-kernel-config
-	@mkdir -p $(NEXISOS_BOARD_DIR)
-	@install -m 644 $(KERNEL_CONFIG) $(NEXISOS_BOARD_DIR)/linux-$(ARCH).config
-	@echo "Copied kernel config for $(ARCH) to Buildroot board/nexisos"
-
-.PHONY: copy-nexpm-package
-copy-nexpm-package:
-	@mkdir -p $(BUILDROOT_DIR)/package/nexpm
-	@install -m 644 IsoDependencies/package/nexpm/nexpm.mk $(BUILDROOT_DIR)/package/nexpm/
-	@install -m 644 IsoDependencies/package/nexpm/Config.in $(BUILDROOT_DIR)/package/nexpm/
-	@echo "Copied nexpm package files to Buildroot package directory"
-
-.PHONY: patch-config
-patch-config:
-ifneq ($(PATCH_APPLIED),yes)
-	@if [ ! -f $(BACKUP_CONFIG) ]; then cp $(BUILDROOT_CONFIG) $(BACKUP_CONFIG); fi
-	@echo "$(PATCH_MARKER)" >> $(BUILDROOT_CONFIG)
-	@cat IsoDependencies/package/Config.in >> $(BUILDROOT_CONFIG)
-	@echo "# End nexpm Config.in patch" >> $(BUILDROOT_CONFIG)
-	@echo "Appended nexpm Config.in to Buildroot package/Config.in"
-else
-	@echo "nexpm Config.in patch already applied to Buildroot package/Config.in"
-endif
-
-.PHONY: copy-runtime-files
-copy-runtime-files:
-	$(call copy_with_mkdir,IsoDependencies/package_manager/*,$(ROOTFS_OVERLAY)/package_manager/)
-	$(call copy_with_mkdir,IsoDependencies/scripts/*.sh,$(ROOTFS_OVERLAY)/scripts/)
-	@chmod +x $(ROOTFS_OVERLAY)/scripts/*.sh
-	@echo "📦 Copied package manager and scripts to rootfs overlay"
-
-.PHONY: copy-overlay
-copy-overlay:
-	@rm -rf $(NEXISOS_BOARD_DIR)/rootfs-overlay
-	@rsync -a --delete IsoDependencies/overlay/ $(NEXISOS_BOARD_DIR)/rootfs-overlay/
-	@echo "Copied overlay files to Buildroot board/nexisos/rootfs-overlay"
-
-.PHONY: setup-postbuild
-setup-postbuild:
-	@mkdir -p $(NEXISOS_BOARD_DIR)
-	@cat > $(NEXISOS_BOARD_DIR)/post-build.sh << 'EOF'
-#!/bin/sh
-# Run install.sh at login
-echo "/root/scripts/install.sh" >> $(TARGET_DIR)/etc/profile
-EOF
-	@chmod +x $(NEXISOS_BOARD_DIR)/post-build.sh
-	@echo "🛠️  Created post-build hook to auto-launch installer on boot"
-
-.PHONY: prepare-deps
-prepare-deps: copy-kernel-config copy-nexpm-package patch-config copy-runtime-files copy-overlay setup-postbuild
-	@echo "✅ All required dependencies and overlays prepared for Buildroot."
-
-.PHONY: restore-config
-restore-config:
-	if [ -f $(BACKUP_CONFIG) ]; then
-		mv $(BACKUP_CONFIG) $(BUILDROOT_CONFIG)
-		echo "Restored original Buildroot package/Config.in"
-	fi
-
-.PHONY: cleanup
-cleanup:
-	@rm -rf $(BUILDROOT_DIR)/package/nexpm
-	@$(MAKE) restore-config
-	@echo "Cleaned up copied nexpm package files and restored Buildroot config"
-
+# === Build Rules ===
 .PHONY: build
-build: prepare prepare-deps
-	@echo "Building NexisOS ISO for $(ARCH)..."
-	$(MAKE) -C $(BUILDROOT_DIR) O=$(OUTPUT_DIR) BR2_DEFCONFIG=$(CONFIG_FILE) defconfig
-	$(MAKE) -C $(BUILDROOT_DIR) O=$(OUTPUT_DIR) -j$(NUM_JOBS)
-	$(call backup_images)
-	$(MAKE) cleanup
-	@echo "✅ Build complete. ISO and images copied to buildroot_backup_imgs/$(ARCH)/output/images"
+build:
+	@ARCH=$${ARCH:-x86_64}; \
+	if ! echo "$(ARCHS)" | grep -qw $$ARCH; then \
+		echo "❌ Unsupported architecture: $$ARCH"; exit 1; \
+	fi; \
+	$(call copy_config_and_overlay,$$ARCH); \
+	$(call copy_scripts_and_packages); \
+	echo "🚀 Building NexisOS for $$ARCH..."; \
+	set -e; \
+	trap 'echo "❌ Build failed. Cleaning Buildroot..."; make clean-buildroot; exit 1' ERR; \
+	make -C $(BUILDROOT_DIR) BR2_DEFCONFIG=$(BUILDROOT_DIR)/configs/NexisOS_$${ARCH}_defconfig O=$(OUTPUT_DIR)/$${ARCH} defconfig; \
+	make -C $(BUILDROOT_DIR) O=$(OUTPUT_DIR)/$${ARCH} -j$(NUM_JOBS); \
+	ISO_PATH=$(OUTPUT_DIR)/$${ARCH}/images/*.iso; \
+	if compgen -G "$$ISO_PATH" > /dev/null; then \
+		cp $$ISO_PATH $(OUTPUT_DIR)/NexisOS_$${ARCH}.iso; \
+		echo "✅ ISO created: $(OUTPUT_DIR)/NexisOS_$${ARCH}.iso"; \
+	else \
+		echo "❌ ISO not found."; exit 1; \
+	fi; \
+	make clean-buildroot
 
+# === QEMU Rules ===
+.PHONY: qemu
+qemu:
+	@echo "🖥️  Launch QEMU with GUI"
+	ISOS=$$(ls $(OUTPUT_DIR)/NexisOS_*.iso 2>/dev/null); \
+	if [ -z "$$ISOS" ]; then \
+		echo "❌ No ISOs found in $(OUTPUT_DIR). Build one first."; exit 1; \
+	fi; \
+	CHOICE=$$(whiptail --title "Select ISO to run" --menu "Choose ISO to run in QEMU (or Cancel to skip):" 20 60 10 \
+	$$(for f in $$ISOS; do base=$$(basename $$f .iso); echo "$$base" "$$f"; done) 3>&1 1>&2 2>&3); \
+	if [ -z "$$CHOICE" ]; then \
+		echo "⚠️  No ISO selected. Skipping QEMU."; exit 0; \
+	fi; \
+	case "$$CHOICE" in \
+		*NexisOS_aarch64) QEMU_SYS=qemu-system-aarch64 ;; \
+		*NexisOS_x86_64) QEMU_SYS=qemu-system-x86_64 ;; \
+		*NexisOS_riscv64) QEMU_SYS=qemu-system-riscv64 ;; \
+		*) echo "❌ Could not determine QEMU system for $$CHOICE"; exit 1 ;; \
+	esac; \
+	RAM=$$(whiptail --inputbox "Enter RAM size for QEMU in MB (default 2048):" 10 50 2048 3>&1 1>&2 2>&3); \
+	if [ -z "$$RAM" ]; then RAM=2048; fi; \
+	echo "Launching QEMU for $$CHOICE ($$QEMU_SYS) with $$RAM MB RAM..."; \
+	$$QEMU_SYS -cdrom $(OUTPUT_DIR)/$$CHOICE.iso -m $$RAM -boot d -vga std & disown
+
+# === Menu Using Whiptail ===
+.PHONY: menu
+menu:
+	@CHOICE=$$(whiptail --title "NexisOS Build Menu" --menu "Select action:" 20 60 10 \
+	"1" "Build an ISO" \
+	"2" "Run ISO in QEMU (optional)" 3>&1 1>&2 2>&3); \
+	case $$CHOICE in \
+		1) ARCH=$$(whiptail --title "Choose Architecture" --menu "Select architecture to build:" 15 60 5 \
+			"$(ARCHS)" "$(ARCHS)" 3>&1 1>&2 2>&3); \
+			if [ -n "$$ARCH" ]; then make build ARCH=$$ARCH; else echo "⚠️  Build canceled."; fi ;; \
+		2) make qemu ;; \
+		*) exit 0 ;; \
+	esac
+
+# === List available ISOs ===
+.PHONY: list-isos
+list-isos:
+	@echo "Existing ISOs in $(OUTPUT_DIR):"
+	@ls -1 $(OUTPUT_DIR)/NexisOS_*.iso 2>/dev/null || echo "No ISOs found"
+
+# === Cleanup ===
 .PHONY: clean
 clean:
-	if [ -d $(BUILDROOT_DIR) ]; then
-		$(MAKE) -C $(BUILDROOT_DIR) O=$(OUTPUT_DIR) clean
-	fi
+	@rm -rf $(OUTPUT_DIR)/*
 
-.PHONY: distclean
-distclean: clean
-	@rm -rf $(OUTPUT_DIR) $(BACKUP_CONFIG)
-	@echo "Removed output directory and backup config"
-
-.PHONY: run-qemu
-run-qemu:
-	@echo "🖥️  Launching QEMU for $(ARCH)..."
-	@ARCH_SCRIPT=MakeDependacies/scripts/qemu/run_$(ARCH).sh; \
-	if [ ! -f "$$ARCH_SCRIPT" ]; then \
-		echo "❌ QEMU script not found: $$ARCH_SCRIPT"; \
-		exit 1; \
-	fi; \
-	chmod +x $$ARCH_SCRIPT; \
-	exec "$$ARCH_SCRIPT"
-
-.PHONY: list-archs
-list-archs:
-	@echo "Available architectures:"
-	@$(foreach arch,$(AVAILABLE_ARCHS),echo " - $(arch)")
-
+# === Help ===
 .PHONY: help
 help:
-	@echo "NexisOS Makefile Commands:"
-	@echo ""
-	@echo "  make [ARCH=arch]     Build image for specified arch (default: x86_64)"
-	@echo "  make clean           Clean build output for selected arch"
-	@echo "  make distclean       Full cleanup"
-	@echo "  make run-qemu        Run the built image in QEMU"
-	@echo "  make list-archs      Show supported architectures"
+	@echo "Usage:"
+	@echo "  make menu            - Interactive menu with whiptail"
+	@echo "  make build ARCH=ARCH - Build ISO for specified ARCH (aarch64, x86_64, riscv64)"
+	@echo "  make qemu            - Run ISO in QEMU (with GUI and RAM selection)"
+	@echo "  make list-isos       - List already-built ISOs"
+	@echo "  make clean           - Remove all output files"
+	@echo "  make clean-buildroot - Reset Buildroot submodule to pristine state"

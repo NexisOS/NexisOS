@@ -1,84 +1,73 @@
-//! NexisOS Package Manager
-//! 
-//! A declarative system package manager with optimized store operations,
-//! refcounting, generation rollbacks, and home-manager-like file management.
+//! # NexisPM - Declarative Package Manager for NexisOS
+//!
+//! A fast, declarative package manager with:
+//! - Content-addressed storage with XFS reflinks
+//! - Atomic generation-based rollbacks
+//! - SELinux-enforced immutability
+//! - Fleet management with profile templates
+//! - Parallel builds and operations
+//!
+//! ## Example Usage
+//!
+//! ```no_run
+//! use nexispm::{Config, Store, GenerationManager};
+//! use std::path::PathBuf;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! // Load configuration
+//! let config = Config::load("/etc/nexis/system.toml")?;
+//!
+//! // Initialize store
+//! let store = Store::open("/nexis-store")?;
+//!
+//! // Create new generation
+//! let gen_manager = GenerationManager::new(PathBuf::from("/nexis-store/generations"));
+//! let gen_id = gen_manager.create_generation(&config)?;
+//!
+//! # Ok(())
+//! # }
+//! ```
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![warn(clippy::all)]
 
 // Core modules
 pub mod config;
-pub mod resolver;
-pub mod util;
-
-// File and configuration management
-pub mod file_manager;
-
-// Storage and metadata
 pub mod store;
-pub mod meta;
-
-// Generation management
-pub mod gen;
-pub mod gc;
-
-// Build system integration
+pub mod packages;
+pub mod files;
+pub mod generations;
+pub mod users;
+pub mod fleet;
+pub mod security;
+pub mod services;
 pub mod build;
+pub mod vcs;
+pub mod utils;
+pub mod constants;
 
-// Networking
-pub mod network;
+// CLI module (only when building binary)
+#[cfg(feature = "cli")]
+pub mod cli;
 
-// Cryptography
-pub mod crypto;
-
-// System integration
-pub mod dinit;
-
-// SELinux support (conditional compilation for Linux)
-#[cfg(target_os = "linux")]
-pub mod selinux;
-
-// Re-exports for convenience
-pub use file_manager::{FileManager, NexisConfig};
+// Re-export commonly used types for convenience
+pub use config::{Config, Package, User, FileDeclaration};
 pub use store::Store;
-pub use resolver::DependencyResolver;
+pub use generations::GenerationManager;
+pub use utils::errors::{Result, NexisError};
 
-/// Package manager version
+/// NexisPM version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Default configuration paths
-pub mod paths {
-    use camino::Utf8PathBuf;
-    
-    /// System configuration directory
-    pub const SYSTEM_CONFIG_DIR: &str = "/etc/nexispm";
-    
-    /// User configuration directory
-    pub const USER_CONFIG_DIR: &str = ".config/nexispm";
-    
-    /// Package store path
-    pub const STORE_PATH: &str = "/store";
-    
-    /// Generation profiles path
-    pub const PROFILES_PATH: &str = "/store/profiles";
-    
-    /// Get user config path
-    pub fn user_config_dir() -> Utf8PathBuf {
-        if let Ok(home) = std::env::var("HOME") {
-            Utf8PathBuf::from(home).join(USER_CONFIG_DIR)
-        } else {
-            Utf8PathBuf::from(USER_CONFIG_DIR)
-        }
-    }
-    
-    /// Get XDG config home
-    pub fn xdg_config_home() -> Utf8PathBuf {
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            Utf8PathBuf::from(xdg)
-        } else if let Ok(home) = std::env::var("HOME") {
-            Utf8PathBuf::from(home).join(".config")
-        } else {
-            Utf8PathBuf::from(".config")
-        }
+/// Default number of parallel build workers
+pub const DEFAULT_WORKERS: usize = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version() {
+        assert!(!VERSION.is_empty());
     }
 }

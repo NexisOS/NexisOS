@@ -1,5 +1,15 @@
 # NexisOS
-Main repository for the NexisOS Linux distribution, containing core build infrastructure, package manager source, configuration examples, and tooling. Optimized for fast package store operations, generation rollbacks, sandboxed builds, SELinux-based immutability enforcement, and high-performance GC.
+Main repository for the NexisOS Linux distribution, containing core build
+infrastructure, package manager source, configuration examples, and tooling.
+Optimized for fast package store operations, generation rollbacks, sandboxed
+builds, SELinux-based immutability enforcement, and high-performance GC.
+
+## Security
+Uses secure boot TPM attestation identity key to verify integraty of loaded
+binaries.
+
+Uses tetragon and selinux to prevent root from altering immutable core OS
+files. Also uses suricata for network intrusion detection and prevention. 
 
 ---
 
