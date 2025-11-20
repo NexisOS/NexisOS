@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "nexis_common",
+    "nexis_init",
+    "nexis_scan",
+    "nexis_pm",
+]
+
+[workspace.dependencies]
+serde = "1.0"
+tokio = "1"

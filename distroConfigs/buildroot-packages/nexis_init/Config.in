@@ -1,0 +1,9 @@
+config BR2_PACKAGE_NEXIS_INIT
+	bool "nexis_init"
+	depends on BR2_PACKAGE_HOST_RUSTC
+	select BR2_PACKAGE_NEXIS_COMMON
+	help
+	  NexisOS init system - the initialization and boot manager
+	  for NexisOS.
+
+	  https://github.com/yourusername/NexisOS

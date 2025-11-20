@@ -1,0 +1,9 @@
+config BR2_PACKAGE_NEXIS_SCAN
+	bool "nexis_scan"
+	depends on BR2_PACKAGE_HOST_RUSTC
+	select BR2_PACKAGE_NEXIS_COMMON
+	help
+	  NexisOS system scanner - analyzes and reports system
+	  configuration and state.
+
+	  https://github.com/yourusername/NexisOS

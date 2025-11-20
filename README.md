@@ -1,15 +1,26 @@
 # NexisOS
 Main repository for the NexisOS Linux distribution, containing core build
-infrastructure, package manager source, configuration examples, and tooling.
-Optimized for fast package store operations, generation rollbacks, sandboxed
-builds, SELinux-based immutability enforcement, and high-performance GC.
+infrastructure, decentralized declarative package manager source, configuration
+examples, and tooling.
 
-## Security
-Uses secure boot TPM attestation identity key to verify integraty of loaded
-binaries.
+NexisOS is designed for high-security, reproducible, immutable, system-wide
+configuration management similar to NixOS, but built around TOML-based
+configuration, decentralized packaging, and modern security enforcement.
 
-Uses tetragon and selinux to prevent root from altering immutable core OS
-files. Also uses suricata for network intrusion detection and prevention. 
+Optimized for fast package store operations, atomic rollbacks, sandboxed
+builds, SELinux-enforced immutability, TPM-backed binary verification, and
+high-performance garbage collection and deduplication.
+
+## Features
+A declarative decentralised system level package manager
+
+NexisOS provides a system-level declarative package manager (nexispm) inspired by Nix, but:
+
+- Uses TOML instead of Nix expressions
+- Allows any user to easily package software using a minimal, predictable schema
+- Is decentralized — packages can be sourced directly from Git, remote archives, registries, or local files without a centralized maintainer or monolithic repository
+- Ensures full reproducibility with hashed store paths, deterministic builds, and lockfiles
+- All system files are generated & linked from an immutable content-addressed store
 
 ---
 
@@ -25,7 +36,7 @@ You can try the latest ISO build of NexisOS by downloading it from SourceForge:
 ## 🔧 Building From Source Prerequisites
 
 <details>
-<summary>Click to see dependencies</summary>
+<summary>Click to see</summary>
 
 ```text
 Buildroot:
@@ -51,41 +62,29 @@ Project:
 
 </details>
 
-## 🛠️ Build the NexisOS ISO Targets
+---
+
+## 🛠️ Build ISO Targets & Testing
 
 <details>
-<summary>Click to see how to build iso</summary>
+<summary>Click to see</summary>
 
+### Recommended Workflow
 ```sh
 git submodule update --init --recursive # initialize buildroot submodule
-make                                    # Builds x86_64 by default
-make ARCH=aarch64                       # Builds using nexisos_aarch64_defconfig
-make ARCH=riscv64                       # Builds using nexisos_riscv64_defconfig
+make menu                               # recommended TUI
 ```
 
-Output locations:
+### Manual Make Commands
 ```sh
-buildroot_backup_imgs/x86/output/images/bzImage
-buildroot_backup_imgs/x86/output/images/rootfs.ext2
-buildroot_backup_imgs/x86/output/images/run-qemu.sh
+# initialize buildroot submodule
+git submodule update --init --recursive 
 
-buildroot_backup_imgs/aarch64/output/images/bzImage
-buildroot_backup_imgs/aarch64/output/images/rootfs.ext2
-buildroot_backup_imgs/aarch64/output/images/run-qemu.sh
+make              # Builds x86_64 by default
+make ARCH=aarch64 # Builds using nexisos_aarch64_defconfig
+make ARCH=riscv64 # Builds using nexisos_riscv64_defconfig
 
-buildroot_backup_imgs/riscv64/output/images/bzImage
-buildroot_backup_imgs/riscv64/output/images/rootfs.ext2
-buildroot_backup_imgs/riscv64/output/images/run-qemu.sh
-```
-
-</details>
-
-## 🖥️ Running NexisOS in QEMU for Testing
-
-<details>
-<summary>Click to see how to test distro in virt</summary>
-
-```sh
+# QEMU test ISO's
 make run-qemu              # defaults to ARCH=x86_64
 make run-qemu ARCH=x86     # specify arch explicitly
 make run-qemu ARCH=aarch64
@@ -95,10 +94,292 @@ make run-qemu ARCH=aarch64
 
 ---
 
+## Installer ISO Script
+
+<details>
+<summary>Click to see</summary>
+
+Before the end-user installs distro UEFI or boot settings must be set 
+
+Once precondtions are met the iso launches the whiptail installer TUI
+After setting the blank the hardware.toml and blank are created 
+
+</details>
+
+
+---
+
+## ⚙️ Package Store Design
+
+<details>
+<summary>Click to see</summary>
+
+Core Goals:
+- Filesystem: XFS with reflink=1 for store deduplication
+- Store metadata: RocksDB with WAL + Bloom filters
+- Hashing: BLAKE3 (parallel)
+- GC: refcounted, async deletion, bucketed hashed directory layout
+- Desktop performance: ext4 recommended for `/home`, `/var`, `/opt`
+
+Example store layout:
+```text
+/store/
+└── ab/
+    └── cd/
+        ├── abcd1234-vim/
+        └── abcd5678-libpng/
+```
+
+</details>
+
+---
+
+## ⚙️ Garbage Collection & Rollbacks
+
+<details>
+<summary>Click to see</summary>
+
+- Refcount DB tracks all store objects
+- Unreferenced objects moved to `/store/.trash/` before async delete
+- Parallel GC workers with optional io_uring acceleration
+- Rollbacks:
+  - Generations stored as complete configs
+  - Switch generations atomically
+  - Auto-generated GRUB entries
+  - Keep last N generations (configurable)
+
+</details>
+
+---
+
+## ⚙️ Version Providers
+
+
+<details>
+<summary>Click to see</summary>
+
+By default, NexisPM resolves versions via Git tags + semver. With the `version-providers` feature, external registries are supported.
+
+Example:
+```toml
+[[packages]]
+name = "numpy"
+version = "latest"
+provider = "pypi"
+
+[[packages]]
+name = "express"
+version = "^4.0"
+provider = "npm"
+
+[[packages]]
+name = "serde"
+version = "^1.0"
+provider = "cratesio"
+```
+
+</details>
+
+---
+
+## ⚙️ Commands
+
+
+<details>
+<summary>Click to see</summary>
+
+- `nexis generate-hardware` → Regenerate `hardware.toml`
+- `nexis resolve-versions` → Update `nexis.lock` with latest versions
+- `nexis build` → Build system from config
+- `nexis switch` → Switch to new generation
+- `nexis rollback` → Rollback to previous generation
+
+</details>
+
+---
+
+## Security Architecture
+
+<details>
+<summary>Click to see</summary>
+
+
+### Directory Access Model (ASCII)
+```text
+/
+├── nexis-store/        [Immutable | managed by nexispm]
+├── etc/                [Immutable | managed by nexispm]
+├── usr/                [Immutable | managed by nexispm]
+├── boot/               [Immutable | managed by nexispm]
+├── var/                [Mutable | system services and logs]
+├── tmp/                [Mutable | temporary files]
+├── home/
+│   ├── user/
+│   │   ├── .local/     [Immutable | managed by nexispm]
+│   │   ├── Documents/  [Mutable | user data]
+│   │   ├── Downloads/  [Mutable | user data]
+│   │   └── Games/      [Mutable | user data]
+└── opt/                [Mutable | optional third-party software]
+```
+
+### SELinux Enforcement Matrix
+| Directory        | SELinux Type       | Actor          | Access Rights                   | Notes |
+|------------------|-------------------|---------------|---------------------------------|-------|
+| `/nexis-store`   | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Only package manager can modify store |
+| `/etc`           | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | System configs enforced immutable |
+| `/usr`           | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Binaries & libraries locked |
+| `/boot`          | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Kernel and bootloader managed declaratively |
+| `/home/.local`   | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | User-local installs controlled only by package manager |
+| `/var`           | `var_t`           | `system_u:system_r:services_t` | read, write, append             | Service and log storage |
+| `/tmp`           | `tmp_t`           | `user_t` / services | read, write, append          | Ephemeral files |
+| `/home` (except `.local`) | `home_t` | `user_t`       | full user control               | User documents, data, personal files |
+| `/opt`           | `opt_t`           | `user_t` / admins | install third-party software | Safe mutable location outside of store |
+
+This approach balances **safety** (immutability of core paths), **performance** (minimal SELinux checks beyond boundaries), and **maintainability** (clear separation between declarative and user-managed paths). It also prevents **dependency hell** by ensuring all system-managed packages flow through `nexispm` rather than ad-hoc installs.
+
+```txt
+Universal Security Scanner
+├── 1. Input Layer
+│       ├── Source Code (multi-language)
+│       ├── Binaries / compiled artifacts
+│       ├── Packages (tarballs, wheels, crates, jars, rpms, debs)
+│       └── Metadata (manifests, lockfiles, SBOMs)
+│
+├── 2. File Normalization Layer
+│       ├── Archive Extractor
+│       ├── Binary Introspector (ELF/PE/Mach-O)
+│       ├── Decompiler / Disassembler
+│       ├── SBOM Generator (CycloneDX/SPDX)
+│       └── Language Detector & Routing
+│
+├── 3. Multi-Mode Analysis Engine
+│       │
+│       ├── 3.1 Static Code Analysis (SAST)
+│       │       ├── AST Parsers per language
+│       │       ├── Semantic analysis
+│       │       ├── Security rule engine (Semgrep/CodeQL-like)
+│       │       ├── Dataflow & taint analysis
+│       │       ├── Unsafe patterns & zero-day indicators
+│       │       └── Secret detection & crypto misuse checks
+│       │
+│       ├── 3.2 Binary Static Analysis
+│       │       ├── Disassembly (Capstone / LLVM / Ghidra)
+│       │       ├── Decompilation (RetDec-like)
+│       │       ├── Symbol & string extraction
+│       │       ├── Malware signatures (YARA)
+│       │       ├── Heuristic/entropy anomaly scans
+│       │       └── Behavioral pattern inference
+│       │
+│       ├── 3.3 Dynamic Analysis (optional sandboxing)
+│       │       ├── Behavior sandbox for binaries
+│       │       ├── Syscall tracing (seccomp, ptrace)
+│       │       ├── Network behavior tracing
+│       │       ├── Resource abuse heuristics (crypto mining, botnets)
+│       │       └── ML-based behavior anomaly detection
+│       │
+│       └── 3.4 ML / Zero-Day Detection Module
+│               ├── Code embeddings (AST/CFG features)
+│               ├── Binary embeddings (opcode-level)
+│               ├── Outlier detection vs trusted models
+│               ├── Malicious pattern classifier
+│               ├── Supply-chain anomaly detection (rare patterns, strange publish times)
+│               └── Behavioral anomaly ML model
+│
+├── 4. Dependency & Supply Chain Analysis
+│       ├── Direct & transitive dependency graph
+│       ├── Integrity & provenance checks
+│       ├── Package origin validation (registry → Git → hash)
+│       ├── CVE & zero-day heuristic scanner (OSV/RustSec/NVD)
+│       ├── Artifact signature verification (SigStore, GPG)
+│       ├── Dependency risk scoring (download count, maintainer trust, typosquatting)
+│       └── Malicious dependency pattern detection
+│
+├── 5. Threat Intelligence Layer
+│       ├── Known vulnerabilities (OSV.dev, RustSec, NVD)
+│       ├── YARA rules
+│       ├── Reputation feeds (optional)
+│       ├── Hash databases (goodware/badware ML)
+│       └── Behavior & anomaly corpora
+│
+├── 6. Correlation Engine
+│       ├── Combine static + binary + dynamic + supply chain signals
+│       ├── Risk scoring algorithm
+│       ├── Zero-day likelihood estimation
+│       └── Confidence models
+│
+├── 7. Reporting & Output Layer
+│       ├── CLI / JSON / HTML report
+│       ├── SBOM with vulnerability annotations
+│       ├── Behavior trace logs
+│       ├── Dependency risk report
+│       └── Recommended remediation
+│
+└── 8. Plugin & Extensibility Framework
+        ├── Add new language analyzers
+        ├── Add custom detection rules
+        ├── Integrate with CI/CD
+        ├── Support custom corpora (enterprise)
+        └── Custom ML models
+```
+
+- Secure Boot verifies bootloader and kernel signatures  
+- NexisOS binds system identity to a **TPM attestation identity key**  
+- The TPM verifies **integrity of loaded binaries** and prevents unsigned or tampered binaries from executing
+
+### Immutable Core OS
+- SELinux enforces that only the package manager (`nexispm`) can modify:
+  - `/nexis-store`
+  - `/usr`
+  - `/etc`
+  - `/boot`
+  - `$HOME/.local`  
+- Even root cannot mutate system files or replace installed software without going through the declarative manager  
+
+### Runtime Security Monitoring
+- **Tetragon**: kernel-aware runtime process monitoring for syscall enforcement, privilege escalation prevention, and unexpected behavior detection  
+- **Suricata**: inline network IDS/IPS for traffic inspection, C2 detection, and exploitation alerts  
+
+### Advanced Multi-Layer Security Scanner
+The scanner integrates into `nexispm` and provides:
+
+    1. Signature-Based Malware Detection
+      - Binary signatures, hash-based scanning, YARA rules  
+      - Archives, installers, and opaque binaries scanned before installation  
+    
+    2. Zero-Day & Vulnerability Detection
+      - AST and semantic analysis for unknown threats  
+      - Detects unsafe APIs, RCE vectors, memory-unsafe code, and obfuscated binaries  
+    
+    3. Multi-Language SAST
+      - Static analysis for multiple languages  
+      - Taint and dataflow analysis  
+      - Vulnerability rule engine for package code  
+    
+    4. Binary & Compiled Package Scanning
+      - ELF, Mach-O, PE, WASM, and other formats  
+      - Disassembly + control flow analysis  
+      - Entropy, packer detection, ML-assisted anomaly detection  
+    
+    5. Supply Chain & Dependency Security
+      - Direct and transitive dependency scanning  
+      - OSV/RustSec/NVD vulnerability lookups  
+      - Typosquatting and dependency confusion detection  
+      - Hash-based reproducibility and SBOM generation  
+    
+    6. ML-Based Anomaly Detection
+      - Detects zero-day behavior, malicious build scripts, and unusual
+        dependency patterns
+
+NexisOS treats security scanning as part of the package lifecycle — before installation, after build, and during updates.
+
+</details>
+
+---
+
 ## ⚙️ Example TOML Configurations
 
 <details>
-<summary>Click to see possible TOML config examples</summary>
+<summary>Click to see</summary>
 
 ### Minimal `config.toml`
 ```toml
@@ -188,10 +469,10 @@ version = "6.10.1"
 resolved = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git?tag=v6.10.1"
 ```
 
-### Example dinit service in `nginx.toml`
+### Example init service in `nexis_init.toml`
 ```toml
 [[packages]]
-name = "nginx"
+name = ""
 
 [packages.dinit_services.nginx]
 type = "process"
@@ -205,8 +486,11 @@ start_timeout = 30
 enable = true
 ```
 
-### Declarative File Management (`files`)
-Like Nix’s `writeText` or `environment.etc`, NexisPM allows declarative creation and tracking of files (configs, dotfiles, system files). Files are stored in `/nexis-store` with hash-based paths and symlinked into place, ensuring immutability and reproducibility.
+### Declarative File Management
+Like Nix’s `writeText` or `environment.etc`, NexisPM allows declarative
+creation and tracking of files (configs, dotfiles, system files). Files are
+stored in `/nexis-store` with hash-based paths and symlinked into place,
+ensuring immutability and reproducibility.
 
 ```toml
 [[files]]
@@ -223,6 +507,7 @@ set -g -x PATH $PATH /nexis-store/bin
 alias ll="ls -la"
 '''
 mode = "0644"
+fleet = "?"
 owner = "myuser"
 group = "users"
 
@@ -288,7 +573,7 @@ group = "users"
 ## ⚙️ SELinux Enforced Immutability
 
 <details>
-<summary>Click to see possible SELinux policy example</summary>
+<summary>Click to see</summary>
 
 NexisOS uses SELinux to enforce immutability on critical directories and the package store. This ensures only the package manager (`nexispm`) has permission to modify these paths, protecting against accidental or malicious tampering.
 
@@ -319,127 +604,5 @@ allow nexispm_t immutable_dir_t:file { create write unlink append rename };
 allow user_t immutable_dir_t:dir { getattr search open };
 allow user_t immutable_dir_t:file { getattr open read };
 ```
-
-### Directory Access Model (ASCII)
-```text
-/
-├── nexis-store/        [Immutable | managed by nexispm]
-├── etc/                [Immutable | managed by nexispm]
-├── usr/                [Immutable | managed by nexispm]
-├── boot/               [Immutable | managed by nexispm]
-├── var/                [Mutable | system services and logs]
-├── tmp/                [Mutable | temporary files]
-├── home/
-│   ├── user/
-│   │   ├── .local/     [Immutable | managed by nexispm]
-│   │   ├── Documents/  [Mutable | user data]
-│   │   ├── Downloads/  [Mutable | user data]
-│   │   └── Games/      [Mutable | user data]
-└── opt/                [Mutable | optional third-party software]
-```
-
-### SELinux Enforcement Matrix
-| Directory        | SELinux Type       | Actor          | Access Rights                   | Notes |
-|------------------|-------------------|---------------|---------------------------------|-------|
-| `/nexis-store`   | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Only package manager can modify store |
-| `/etc`           | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | System configs enforced immutable |
-| `/usr`           | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Binaries & libraries locked |
-| `/boot`          | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | Kernel and bootloader managed declaratively |
-| `/home/.local`   | `immutable_dir_t` | `nexispm_t`   | read, write, create, delete     | User-local installs controlled only by package manager |
-| `/var`           | `var_t`           | `system_u:system_r:services_t` | read, write, append             | Service and log storage |
-| `/tmp`           | `tmp_t`           | `user_t` / services | read, write, append          | Ephemeral files |
-| `/home` (except `.local`) | `home_t` | `user_t`       | full user control               | User documents, data, personal files |
-| `/opt`           | `opt_t`           | `user_t` / admins | install third-party software | Safe mutable location outside of store |
-
-This approach balances **safety** (immutability of core paths), **performance** (minimal SELinux checks beyond boundaries), and **maintainability** (clear separation between declarative and user-managed paths). It also prevents **dependency hell** by ensuring all system-managed packages flow through `nexispm` rather than ad-hoc installs.
-
-</details>
-
----
-
-## ⚙️ Package Store Design
-
-<details>
-<summary>Click to see Goals</summary>
-
-Core Goals:
-- Filesystem: XFS with reflink=1 for store deduplication
-- Store metadata: RocksDB with WAL + Bloom filters
-- Hashing: BLAKE3 (parallel)
-- GC: refcounted, async deletion, bucketed hashed directory layout
-- Desktop performance: ext4 recommended for `/home`, `/var`, `/opt`
-
-Example store layout:
-```text
-/store/
-└── ab/
-    └── cd/
-        ├── abcd1234-vim/
-        └── abcd5678-libpng/
-```
-
-</details>
-
----
-
-## ⚙️ Garbage Collection & Rollbacks
-
-<details>
-<summary>Click to see features</summary>
-
-- Refcount DB tracks all store objects
-- Unreferenced objects moved to `/store/.trash/` before async delete
-- Parallel GC workers with optional io_uring acceleration
-- Rollbacks:
-  - Generations stored as complete configs
-  - Switch generations atomically
-  - Auto-generated GRUB entries
-  - Keep last N generations (configurable)
-
-</details>
-
----
-
-## ⚙️ Version Providers
-
-
-<details>
-<summary>Click to see details</summary>
-
-By default, NexisPM resolves versions via Git tags + semver. With the `version-providers` feature, external registries are supported.
-
-Example:
-```toml
-[[packages]]
-name = "numpy"
-version = "latest"
-provider = "pypi"
-
-[[packages]]
-name = "express"
-version = "^4.0"
-provider = "npm"
-
-[[packages]]
-name = "serde"
-version = "^1.0"
-provider = "cratesio"
-```
-
-</details>
-
----
-
-## ⚙️ Commands
-
-
-<details>
-<summary>Click to see example cli commands</summary>
-
-- `nexis generate-hardware` → Regenerate `hardware.toml`
-- `nexis resolve-versions` → Update `nexis.lock` with latest versions
-- `nexis build` → Build system from config
-- `nexis switch` → Switch to new generation
-- `nexis rollback` → Rollback to previous generation
 
 </details>

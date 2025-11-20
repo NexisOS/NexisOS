@@ -1,0 +1,7 @@
+[package]
+name = "nexis_init"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nexis_common = { path = "../nexis_common" }

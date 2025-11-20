@@ -1,0 +1,10 @@
+config BR2_PACKAGE_NEXIS_PM
+	bool "nexis_pm"
+	depends on BR2_PACKAGE_HOST_RUSTC
+	select BR2_PACKAGE_NEXIS_COMMON
+	help
+	  NexisOS package manager - declarative, reproducible package
+	  management system with support for generations, rollbacks,
+	  and fleet management.
+
+	  https://github.com/yourusername/NexisOS

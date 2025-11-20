@@ -1,0 +1,43 @@
+# Target architecture - leave unset for flexibility; set via build command
+# BR2_ARCH_X86_64=y
+# BR2_ARCH_AARCH64=y
+# BR2_ARCH_RISCV64=y
+
+# Toolchain
+BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+BR2_TOOLCHAIN_HAS_THREADS=y
+BR2_TOOLCHAIN_BUILDROOT_WCHAR=y
+
+# Filesystem
+BR2_TARGET_ROOTFS_EXT4=y
+BR2_TARGET_ROOTFS_EXT4_SIZE="64M"
+BR2_ROOTFS_OVERLAY="distroConfigs/overlay"
+
+# Base system packages
+BR2_PACKAGE_BUSYBOX=y
+BR2_PACKAGE_SHADOW=y       # User management
+BR2_PACKAGE_WHIPTAIL=y     # Dialog/whiptail UI
+BR2_PACKAGE_BASH=y
+BR2_PACKAGE_OPENSSH=y      # Optional: ssh server
+BR2_PACKAGE_HTOP=y         # Optional: for debugging
+
+# Bootloader & kernel
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="defconfig"
+BR2_LINUX_KERNEL_HEADERS_CUSTOM_5_15=y
+
+# Init system
+BR2_TARGET_UBOOT=y
+BR2_TARGET_ROOTFS_BUSYBOX_BOOT=y
+
+# ISO/Installer
+BR2_TARGET_GENERIC_GETTY_PORT="tty0"
+BR2_TARGET_GENERIC_GETTY_BAUD="115200"
+
+# Networking (optional)
+BR2_PACKAGE_IPROUTE2=y
+BR2_PACKAGE_IPUTILS_PING=y
+
+# Minimal X support if you ever want GUI installer (optional)
+# BR2_PACKAGE_XORG_XF86INPUT_EVDEV=y
